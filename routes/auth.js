@@ -2,7 +2,8 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const jwt = require('jose');
+const { SignJWT, jwtVerify } = require('jose');
+const { TextEncoder } = require('util');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { sendEmail } = require('../utils/email');
@@ -14,31 +15,36 @@ const router = express.Router();
 
 // ── TOKEN HELPERS ─────────────────────────────────────────────────
 
-function signAccessToken(user) {
-  return jwt.sign(
-    { userId: user._id, tv: user.tokenVersion || 0 },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '5m' }
-  );
+const accessSecret = new TextEncoder().encode(
+  process.env.JWT_SECRET
+);
+
+const refreshSecret = new TextEncoder().encode(
+  process.env.JWT_REFRESH_SECRET
+);
+
+async function signAccessToken(user) {
+  return await new SignJWT({
+    userId: String(user._id),
+    tv: user.tokenVersion || 0,
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(process.env.JWT_EXPIRES_IN || '5m')
+    .sign(accessSecret);
 }
 
-function signRefreshToken(user) {
-  return jwt.sign(
-    { userId: user._id, tv: user.tokenVersion || 0 },
-    process.env.JWT_REFRESH_SECRET,
-    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '1d' }
-  );
-}
-
-function sendTokenResponse(res, user, statusCode = 200) {
-  const accessToken  = signAccessToken(user);
-  const refreshToken = signRefreshToken(user);
-  res.status(statusCode).json({
-    success: true,
-    accessToken,
-    refreshToken,
-    user: user.toSafeObject(),
-  });
+async function signRefreshToken(user) {
+  return await new SignJWT({
+    userId: String(user._id),
+    tv: user.tokenVersion || 0,
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(
+      process.env.JWT_REFRESH_EXPIRES_IN || '1d'
+    )
+    .sign(refreshSecret);
 }
 
 // ── VALIDATION RULES ──────────────────────────────────────────────
