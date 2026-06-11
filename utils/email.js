@@ -117,7 +117,6 @@ function buildTemplate(template, data) {
 
   return templates[template] || base(`<h1>Hello ${data.name || ''}</h1><p>${data.message || ''}</p>`);
 }
-
 // ── SEND FUNCTION ─────────────────────────────────────────────────
 async function sendEmail({ to, subject, template, data, html }) {
   try {

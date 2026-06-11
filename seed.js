@@ -218,7 +218,7 @@ async function seed() {
     console.log(`  ✅ Admin: ${admin.email}\n`);
     console.log('🎉 Seed complete!\n');
     console.log('━'.repeat(40));
-    console.log(`Admin email:    ${adminEmail}`);
+    console.log(`Admin email:    ${adminEmail}`)
     console.log('━'.repeat(40));
     console.log('⚠️  Change the admin password immediately after first login!\n');
 

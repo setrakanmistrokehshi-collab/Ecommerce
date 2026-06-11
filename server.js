@@ -148,7 +148,7 @@ app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/webhooks')) {
     return next();
   }
-  res.sendFile(path.join(__dirname, '../frontend/index.html'));
+  
 });
 
 // ── ERROR HANDLER (must be last) ──────────────────────────────────

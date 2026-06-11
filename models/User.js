@@ -89,7 +89,7 @@ userSchema.pre('save', async function (next) {
   if (!this.isNew) {
     this.tokenVersion = (this.tokenVersion || 0) + 1;
   }
-  next();
+  
 });
 
 // ── METHOD: compare password ──────────────────────────────────────
