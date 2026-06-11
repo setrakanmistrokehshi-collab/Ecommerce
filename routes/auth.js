@@ -26,7 +26,7 @@ async function signAccessToken(user) {
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime(process.env.JWT_EXPIRES_IN || '5m')
+    .setExpirationTime(process.env.JWT_EXPIRES_IN )
     .sign(accessSecret);
 }
 
@@ -128,14 +128,14 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
       '+password +loginAttempts +lockUntil +tokenVersion'
     );
 
-    if (!user) return next(new AppError('Invalid credentials', 401));
+    if (!user) return next(new AppError('Invalid ', 401));
     if (user.isLocked) return next(new AppError('Account locked', 423));
     if (!user.isActive) return next(new AppError('Account disabled', 403));
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       await user.incLoginAttempts();
-      return next(new AppError('Invalid credentials', 401));
+      return next(new AppError('Invalid', 401));
     }
 
     await User.findByIdAndUpdate(user._id, {
@@ -147,7 +147,7 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
 
     logger.info(`Login: ${email} [IP: ${req.ip}]`);
 
-    return await sendTokenResponse(user, res);
+    return await sendTokenResponse(user, res, 200);
   } catch (err) {
     next(err);
   }
