@@ -84,7 +84,6 @@ const orderSchema = new mongoose.Schema({
 
 // ── INDEXES ───────────────────────────────────────────────────────
 orderSchema.index({ user: 1, createdAt: -1 });
-orderSchema.index({ orderNumber: 1 }, { unique: true });
 orderSchema.index({ status: 1 });
 orderSchema.index({ nombaReference: 1 });
 orderSchema.index({ transactionId: 1 });

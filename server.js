@@ -105,14 +105,28 @@ app.use('/api/v1/auth/forgot-password',     authLimiter);
 app.use('/api/v1/auth/reset-password',      authLimiter);
 app.use('/webhooks',                        webhookLimiter);
 
-// ── HEALTH CHECKS ─────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({
-  status:    'ok',
-  timestamp: new Date(),
-  uptime:    process.uptime(),
-  env:       process.env.NODE_ENV,
-}));
+// Root route (API identity)
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Winners Health API',
+    version: '1.0.0',
+  });
+});
 
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV,
+    database:
+      mongoose.connection.readyState === 1
+        ? 'connected'
+        : 'disconnected',
+  });
+});
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 app.get('/ready', async (req, res) => {
   try {
     await mongoose.connection.db.admin().ping();
@@ -122,14 +136,9 @@ app.get('/ready', async (req, res) => {
   }
 });
 
-// ── STATIC FILES ──────────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, '../frontend'), {
-  maxAge: '1y',
-  etag:   true,
-  index:  false,
-}));
 
 // ── API ROUTES ────────────────────────────────────────────────────
+
 app.use('/api/v1/auth',     authRoutes);
 app.use('/api/v1/users',    userRoutes);
 app.use('/api/v1/products', productRoutes);
@@ -143,13 +152,8 @@ app.use('/api', (req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.originalUrl} not found` });
 });
 
-// ── SPA CATCH-ALL (never intercepts /api or /webhooks) ────────────
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api') || req.path.startsWith('/webhooks')) {
-    return next();
-  }
+
   
-});
 
 // ── ERROR HANDLER (must be last) ──────────────────────────────────
 app.use(errorHandler);
@@ -159,9 +163,9 @@ async function connectDB() {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
     logger.info('✅ MongoDB connected');
-  } catch (err) {
-    // Log full error object — err.message alone can be empty for some mongoose errors
-    logger.error('❌ MongoDB connection failed:', err);
+  } catch (error) {
+    // Log full error object — error.message alone can be empty for some mongoose errors
+    logger.error('❌ MongoDB connection failed:', error);
     process.exit(1);
   }
 }
@@ -194,7 +198,7 @@ const PORT = process.env.PORT || 3000;
 
 connectDB().then(() => {
   server = app.listen(PORT, () => {
-    logger.info(`🚀 Server running on port ${PORT} [${process.env.NODE_ENV}]`);
+    logger.info(`🚀 Server running on port ${PORT} || 'http://localhost:3000'}`);
   });
 
   server.timeout          = 30_000;
@@ -210,8 +214,8 @@ connectDB().then(() => {
     process.exit(1);
   });
 
-  process.on('uncaughtException', (err) => {
-    logger.error('Uncaught exception (terminating):', err);
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught exception (terminating):', error);
     process.exit(1);
   });
 });

@@ -7,7 +7,30 @@ const { AppError } = require('../middleware/errorHandler');
 
 const router = express.Router();
 
-// All order routes require authentication
+// ── GUEST ORDER LOOKUP (no auth required) ──────────────────────────
+// Guests can check order status by email + order number/ID
+router.get('/guest/:reference', async (req, res, next) => {
+  try {
+    const { email } = req.query;
+    if (!email) return next(new AppError('Email query parameter required', 400));
+
+    const order = await Order.findOne({
+      $or: [
+        ...((/^[a-f\d]{24}$/i.test(req.params.reference)) ? [{ _id: req.params.reference }] : []),
+        { orderNumber: new RegExp(`^${req.params.reference}$`, 'i') },
+      ],
+      customerEmail: email.toLowerCase(),
+    }).populate('items.product', 'name emoji slug price');
+
+    if (!order) return next(new AppError('Order not found', 404));
+
+    res.json({ success: true, order });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// All subsequent order routes require authentication
 router.use(protect);
 
 // GET /api/v1/orders — get current user's orders

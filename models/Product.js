@@ -39,7 +39,7 @@ const productSchema = new mongoose.Schema({
   },
   emoji:        { type: String, default: '💊' },
   images:       [{ type: String }],
-  sku:          { type: String, unique: true, sparse: true },
+  
   price: {
     type: Number,
     required: [true, 'Price is required'],
@@ -79,7 +79,7 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 productSchema.index({ category: 1, isActive: 1 });
 productSchema.index({ price: 1, rating: -1 });
-productSchema.index({ slug: 1 }, { unique: true });
+
 productSchema.index({ isActive: 1, isFeatured: -1 });
 productSchema.index({ createdAt: -1 });
 productSchema.index({ totalSold: -1 });

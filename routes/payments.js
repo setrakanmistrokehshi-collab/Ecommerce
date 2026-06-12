@@ -122,8 +122,9 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
     const { subtotal, discount, shipping, total } = calculatePricing(validatedItems, promoCode);
     if (total < 100) return next(new AppError('Order total is too low', 400));
 
-    // 3. Resolve user
+    // 3. Resolve user (auth or guest)
     const userId = req.user ? req.user._id : await getOrCreateGuestUser(customer.email, customer.name);
+    const isGuest = !req.user;
 
     // 4. Create pending order
     const order = await Order.create({
@@ -137,6 +138,7 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
       customerName: customer.name,
       customerEmail: customer.email,
       customerPhone: customer.phone,
+      guestEmail: isGuest ? customer.email : undefined, // mark guest orders
     });
 
     logger.info(`Order created: ${order.orderNumber} | ₦${total} | user: ${userId}`);
@@ -248,14 +250,26 @@ async function processSuccessfulPayment(order, nombaData = {}) {
   logger.info(`Payment processed: ${order.orderNumber} | ₦${order.total}`);
 }
 
-module.exports = router;
-module.exports.processSuccessfulPayment = processSuccessfulPayment;
-
+// ── GUEST USER HELPER ────────────────────────────────────────────
 async function getOrCreateGuestUser(email, name) {
   let user = await User.findOne({ email });
-  if (!user) {
-    const tempPassword = require('crypto').randomBytes(16).toString('hex');
-    user = await User.create({ email, name, password: tempPassword });
-  }
+  if (user) return user._id;
+  
+  // Create guest account with secure random password
+  // Guest won't receive welcome email or need to verify
+  const crypto = require('crypto');
+  const tempPassword = crypto.randomBytes(32).toString('hex');
+  user = await User.create({
+    name: name || 'Guest',
+    email,
+    hashPassword: tempPassword,
+    isEmailVerified: false, // guests don't verify
+    isActive: true,
+  });
+  logger.info(`Guest user created: ${email}`);
   return user._id;
 }
+
+module.exports = router;
+module.exports.processSuccessfulPayment = processSuccessfulPayment;
+module.exports.getOrCreateGuestUser = getOrCreateGuestUser;
