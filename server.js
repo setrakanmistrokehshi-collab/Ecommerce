@@ -81,8 +81,8 @@ app.use(compression());
 app.use(limitQueryString(2048));
 
 // ── BODY PARSERS (hpp must come AFTER these) ──────────────────────
-app.use('/webhooks',      express.raw({ type: 'application/json', limit: '100kb' }));
-app.use('/api/v1/admin',  express.json({ limit: '50kb' }));
+app.use('/webhooks/nomba',      express.raw({ type: 'application/json', limit: '100kb' }));
+app.use('/api/v1/admin/users',  express.json({ limit: '50kb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
@@ -127,6 +127,8 @@ app.get('/health', (req, res) => {
   });
 });
 app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+
 app.get('/ready', async (req, res) => {
   try {
     await mongoose.connection.db.admin().ping();
@@ -145,7 +147,7 @@ app.use('/api/v1/products', productRoutes);
 app.use('/api/v1/orders',   orderRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/admin',    adminRoutes);
-app.use('/webhooks',        webhookRoutes);
+app.use('/webhooks/nomba',        webhookRoutes);
 
 // ── API 404 ───────────────────────────────────────────────────────
 app.use('/api', (req, res) => {

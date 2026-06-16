@@ -64,9 +64,10 @@ const productSchema = new mongoose.Schema({
   isActive:     { type: Boolean, default: true },
   isFeatured:   { type: Boolean, default: false },
   reviews:      [reviewSchema],
+  reservedStock:  { type: Number, default: 0, min: 0 },
   rating: { type: Number, default: 0, min: 0, max: 5 },
   numReviews: { type: Number, default: 0 },
-  totalSold: { type: Number, default: 0 },
+  totalSold: { type: Number, default: 0, min: 0 },
   metaTitle:        { type: String, maxlength: 70 },
   metaDescription:  { type: String, maxlength: 160 },
 }, {
@@ -79,12 +80,13 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 productSchema.index({ category: 1, isActive: 1 });
 productSchema.index({ price: 1, rating: -1 });
-
 productSchema.index({ isActive: 1, isFeatured: -1 });
 productSchema.index({ createdAt: -1 });
 productSchema.index({ totalSold: -1 });
 productSchema.index({ sku: 1 }, { sparse: true });
-
+productSchema.index({ _id: 1, stock: 1, reservedStock: 1 },
+{name: 'stock_reserved_index'}
+); // for atomic stock decrement queries
 // ── VIRTUALS ──────────────────────────────────────────────────────
 productSchema.virtual('discountPercent').get(function () {
   if (!this.originalPrice || this.originalPrice <= this.price) return 0;

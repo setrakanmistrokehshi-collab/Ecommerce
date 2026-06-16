@@ -5,12 +5,13 @@
  * Seeds the database with initial products and admin user.
  * Safe to re-run — uses upsert operations.
  */
-
+const dns = require("node:dns");
+dns.setServers(["8.8.8.8", "8.8.4.4"]);
 require('dotenv').config();
 const mongoose       = require('mongoose');
-const User           = require('../models/User');
-const Product        = require('../models/Product');
-const { hashPassword } = require('../utils/password');
+const User           = require('./models/User');
+const Product        = require('./models/Product');
+const { hashPassword } = require('./utils/password');
 
 const PRODUCTS = [
   {
@@ -167,9 +168,7 @@ async function seed() {
   console.log('🌱 Starting database seed...\n');
 
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 10000,
-      family: 4, // fix for Windows SRV DNS issue
+     mongoose.connect(process.env.MONGODB_URI, {
     });
     console.log('✅ Connected to MongoDB\n');
 
@@ -182,7 +181,7 @@ async function seed() {
       const result = await Product.findOneAndUpdate(
         { slug },
         { ...p, slug },
-        { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+        { upsert: true, returnDocument: 'after', runValidators: true, setDefaultsOnInsert: true }
       );
       if (result.createdAt === result.updatedAt) created++; else updated++;
       console.log(`  ${result.emoji} ${result.name} — ₦${result.price.toLocaleString()}`);
@@ -192,13 +191,13 @@ async function seed() {
     // ── ADMIN USER ────────────────────────────────────────────────
     console.log('👤 Seeding admin user...');
 
-    const adminEmail = process.env.ADMIN_EMAIL || 'admin@vitacore.ng';
-    const adminPass  = process.env.ADMIN_PASSWORD;
+    const adminEmail = process.env.ADMIN_EMAIL || '';
+    const adminPass  = process.env.ADMIN_PASSWORD || '';
 
-    if (!adminPass) {
-      console.error('❌ ADMIN_PASSWORD not set in .env — aborting');
-      process.exit(1);
-    }
+    if (!adminEmail || !adminPass) {
+  console.error('❌ ADMIN_EMAIL and ADMIN_PASSWORD required in .env');
+  process.exit(1);
+}
 
     const hashedPassword = await hashPassword(adminPass);
 
@@ -212,8 +211,9 @@ async function seed() {
         isEmailVerified: true,
         isActive:        true,
       },
-      { upsert: true, new: true, runValidators: false, setDefaultsOnInsert: true }
+      { upsert: true, returnDocument: 'after', runValidators: true, setDefaultsOnInsert: true }
     );
+    // Admin user seeded (upsert ensures idempotence)
 
     console.log(`  ✅ Admin: ${admin.email}\n`);
     console.log('🎉 Seed complete!\n');

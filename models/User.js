@@ -59,6 +59,7 @@ const userSchema = new mongoose.Schema({
   lockUntil: { type: Date, select: false },
   lastLogin: { type: Date },
   lastLoginIp: { type: String, select: false },
+  isGuest: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   wishlist: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   newsletterSubscribed: { type: Boolean, default: false },
@@ -85,6 +86,7 @@ userSchema.virtual('isLocked').get(function () {
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   this.password = await argon2.hash(this.password, 12);
+  next();
   // Invalidate all existing sessions when password changes
   if (!this.isNew) {
     this.tokenVersion = (this.tokenVersion || 0) + 1;

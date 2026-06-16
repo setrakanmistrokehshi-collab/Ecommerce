@@ -10,7 +10,7 @@
     "test:coverage": "jest --coverage --runInBand",
     "lint": "eslint . --ext .js",
     "lint:fix": "eslint . --ext .js --fix",
-    "seed": "node utils/seed.js",
+    "seed": "node seed.js",
     "migrate": "node utils/migrate.js"
   },
   "dependencies": {
