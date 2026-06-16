@@ -31,7 +31,8 @@ const webhookRoutes = require('./routes/webhooks');
 const userRoutes    = require('./routes/users');
 const adminRoutes   = require('./routes/admin');
 
-const { errorHandler }                              = require('./middleware/errorHandler');
+
+const { errorHandler } = require('./middleware/errorHandler');
 const { sanitizeInput, requestId, limitQueryString } = require('./middleware/sanitize');
 const { globalLimiter, authLimiter, webhookLimiter } = require('./middleware/rateLimiter');
 const logger = require('./utils/logger');
@@ -81,7 +82,10 @@ app.use(compression());
 app.use(limitQueryString(2048));
 
 // ── BODY PARSERS (hpp must come AFTER these) ──────────────────────
-app.use('/webhooks/nomba',      express.raw({ type: 'application/json', limit: '100kb' }));
+app.use('/webhooks/nomba',
+express.raw({ type: 'application/json', limit: '100kb' }) 
+  // raw body for webhook signature verification
+);
 app.use('/api/v1/admin/users',  express.json({ limit: '50kb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
@@ -128,7 +132,6 @@ app.get('/health', (req, res) => {
 });
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
-
 app.get('/ready', async (req, res) => {
   try {
     await mongoose.connection.db.admin().ping();
@@ -153,9 +156,6 @@ app.use('/webhooks/nomba',        webhookRoutes);
 app.use('/api', (req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.originalUrl} not found` });
 });
-
-
-  
 
 // ── ERROR HANDLER (must be last) ──────────────────────────────────
 app.use(errorHandler);

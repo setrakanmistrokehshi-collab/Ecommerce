@@ -204,7 +204,7 @@ async function seed() {
     const admin = await User.findOneAndUpdate(
       { email: adminEmail },                   // ← filter: find by email
       {
-        name:            'VitaCore Admin',
+        name:            'winners Admin',
         email:           adminEmail,
         password:        hashedPassword,       // ← properly hashed
         role:            'admin',
