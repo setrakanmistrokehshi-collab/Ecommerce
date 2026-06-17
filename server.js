@@ -200,7 +200,7 @@ const PORT = process.env.PORT || 3000;
 
 connectDB().then(() => {
   server = app.listen(PORT, () => {
-    logger.info(`🚀 Server running on port ${PORT} || 'http://localhost:3000'}`);
+    logger.info(`🚀 Server running on port ${PORT}`);
   });
 
   server.timeout          = 30_000;
