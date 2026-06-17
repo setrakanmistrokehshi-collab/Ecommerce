@@ -62,21 +62,33 @@ app.use(helmet({
 
 // ── CORS ──────────────────────────────────────────────────────────
 const rawOrigins = process.env.ALLOWED_ORIGINS;
+
 if (!rawOrigins && process.env.NODE_ENV === 'production') {
   throw new Error('ALLOWED_ORIGINS must be set in production');
 }
 const allowedOrigins = (rawOrigins || 'http://localhost:5173')
-  .split(',').map(o => o.trim()).filter(Boolean);
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error(`CORS: origin ${origin} not allowed`));
+    // allow Postman, server-to-server, curl
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(null, false); // IMPORTANT: don't throw hard error in prod
   },
-  credentials:    true,
-  methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
 }));
+
+// 🔥 IMPORTANT FIX FOR PREFLIGHT
+app.options('*', cors());
 
 app.use(compression());
 app.use(limitQueryString(2048));
