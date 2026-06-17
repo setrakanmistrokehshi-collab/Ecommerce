@@ -66,29 +66,34 @@ const rawOrigins = process.env.ALLOWED_ORIGINS;
 if (!rawOrigins && process.env.NODE_ENV === 'production') {
   throw new Error('ALLOWED_ORIGINS must be set in production');
 }
+
 const allowedOrigins = (rawOrigins || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
 
-app.use(cors({
+const corsOptions = {
   origin: (origin, callback) => {
-    // allow Postman, server-to-server, curl
+    // allow mobile apps, postman, server-to-server
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    return callback(null, false); // IMPORTANT: don't throw hard error in prod
+    logger.warn(`❌ CORS blocked origin: ${origin}`);
+
+    // IMPORTANT: return error instead of silent false
+    return callback(new Error('Not allowed by CORS'));
   },
+
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-}));
+};
 
-// 🔥 IMPORTANT FIX FOR PREFLIGHT
-app.options('*', cors());
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use(compression());
 app.use(limitQueryString(2048));

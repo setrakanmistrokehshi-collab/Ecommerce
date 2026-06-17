@@ -1,0 +1,13 @@
+{"level":"info","message":"SIGINT received — shutting down gracefully","timestamp":"2026-06-17 14:41:07"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-17 14:48:43"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-17 14:48:43"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-17 14:48:43"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-17 14:48:43"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-17 14:48:43"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-17 14:48:43"}
+{"level":"info","message":"✅ Redis [BullMQ] connected","timestamp":"2026-06-17 14:48:46"}
+{"level":"info","message":"✅ Redis [Cache] connected","timestamp":"2026-06-17 14:48:46"}
+{"level":"info","message":"✅ Redis [BullMQ] ready","timestamp":"2026-06-17 14:48:47"}
+{"level":"info","message":"✅ Redis [Cache] ready","timestamp":"2026-06-17 14:48:47"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-06-17 14:48:48"}
+{"level":"info","message":"🚀 Server running on port 3000","timestamp":"2026-06-17 14:48:48"}
