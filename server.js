@@ -63,36 +63,33 @@ app.use(helmet({
 // ── CORS ──────────────────────────────────────────────────────────
 const rawOrigins = process.env.ALLOWED_ORIGINS;
 
-if (!rawOrigins && process.env.NODE_ENV === 'production') {
-  throw new Error('ALLOWED_ORIGINS must be set in production');
-}
-
 const allowedOrigins = (rawOrigins || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
 
 const corsOptions = {
-  origin: (origin, callback) => {
-    // allow mobile apps, postman, server-to-server
+  origin: function (origin, callback) {
+    // allow Postman / server-to-server
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    logger.warn(`❌ CORS blocked origin: ${origin}`);
-
-    // IMPORTANT: return error instead of silent false
-    return callback(new Error('Not allowed by CORS'));
+    // IMPORTANT: reject without throwing
+    return callback(null, false);
   },
-
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 };
 
 app.use(cors(corsOptions));
+
+// 🔥 MUST be BEFORE routes
 app.options('*', cors(corsOptions));
 
 app.use(compression());

@@ -23,7 +23,7 @@ const refreshSecret = new TextEncoder().encode(process.env.JWT_REFRESH_SECRET);
 async function signAccessToken(user) {
   return new SignJWT({
     userId: String(user._id),
-    role:   user.role,              // FIX #1: role must be in JWT for AdminRoute guard
+    role:   user.role,         
     tv:     user.tokenVersion || 0,
   })
     .setProtectedHeader({ alg: 'HS256' })
@@ -120,7 +120,7 @@ router.post('/register', registerRules, validate, async (req, res, next) => {
 
     await sendEmail({
       to:       email,
-      subject:  'Verify your email — VitaCore',
+      subject:  'Verify your email ',
       template: 'welcome',
       data:     { name, verifyUrl },
     });
@@ -243,7 +243,7 @@ router.post('/forgot-password', async (req, res, next) => {
 
     await sendEmail({
       to:       user.email,
-      subject:  'Reset your VitaCore password',
+      subject:  'Reset your  password',
       template: 'passwordReset',
       data:     { name: user.name, resetUrl },
     });
