@@ -10,7 +10,7 @@ function validateEnv() {
     'JWT_SECRET',
     'JWT_REFRESH_SECRET',
     //'NOMBA_CLIENT_ID',
-    //'NOMBA_CLIENT_SECRET',
+    //'NOMBA_WEBHOOK_SECRET',
     //'NOMBA_ACCOUNT_ID',
     //'NOMBA_BASE_URL',
     //'EMAIL_HOST',
@@ -19,6 +19,7 @@ function validateEnv() {
     'EMAIL_FROM_ADDRESS',
     'BASE_URL',
     'ALLOWED_ORIGINS',
+    
   ];
 
   const PROD_REQUIRED = [
