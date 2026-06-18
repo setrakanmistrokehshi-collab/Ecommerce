@@ -40,7 +40,7 @@ function errorHandler(err, req, res, next) {
   }
 
   // JWT errors (handled in auth middleware, but just in case)
-  if (err.name === 'JsonWebTokenError') { statusCode = 401; message = 'Invalid token'; isOperational = true; }
+  if (err.name === 'JwtError') { statusCode = 401; message = 'Invalid token'; isOperational = true; }
   if (err.name === 'TokenExpiredError') { statusCode = 401; message = 'Token expired'; isOperational = true; }
 
   // Log non-operational (unexpected) errors with full stack

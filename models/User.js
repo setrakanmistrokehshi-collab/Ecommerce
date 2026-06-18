@@ -84,14 +84,19 @@ userSchema.virtual('isLocked').get(function () {
 
 // ── PRE-SAVE: hash password + bump tokenVersion on change ─────────
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  this.password = await argon2.hash(this.password, 12);
-  next();
-  // Invalidate all existing sessions when password changes
-  if (!this.isNew) {
-    this.tokenVersion = (this.tokenVersion || 0) + 1;
+  try {
+    if (this.isModified('password')) {
+      this.password = await argon2.hash(this.password);
+    }
+
+    if (!this.isNew && this.isModified('password')) {
+      this.tokenVersion = (this.tokenVersion || 0) + 1;
+    }
+
+    next();
+  } catch (err) {
+    next(err);
   }
-  
 });
 
 // ── METHOD: compare password ──────────────────────────────────────
@@ -102,15 +107,24 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 // ── METHOD: increment login attempts / lock ───────────────────────
 userSchema.methods.incLoginAttempts = async function () {
   const MAX_ATTEMPTS = 5;
-  const LOCK_TIME = 2 * 60 * 60 * 1000; // 2 hours
+  const LOCK_TIME = 2 * 60 * 60 * 1000;
 
-  if (this.lockUntil && this.lockUntil < Date.now()) {
-    return this.updateOne({ $set: { loginAttempts: 1 }, $unset: { lockUntil: 1 } });
+  const now = Date.now();
+
+  // reset if lock expired
+  if (this.lockUntil && this.lockUntil < now) {
+    return this.updateOne({
+      $set: { loginAttempts: 1 },
+      $unset: { lockUntil: 1 },
+    });
   }
 
-  const updates = { $inc: { loginAttempts: 1 } };
-  if (this.loginAttempts + 1 >= MAX_ATTEMPTS && !this.isLocked) {
-    updates.$set = { lockUntil: Date.now() + LOCK_TIME };
+  const newAttempts = (this.loginAttempts || 0) + 1;
+  const updates = {
+    $set: { loginAttempts: newAttempts },
+  };
+  if (newAttempts >= MAX_ATTEMPTS) {
+    updates.$set.lockUntil = now + LOCK_TIME;
   }
   return this.updateOne(updates);
 };

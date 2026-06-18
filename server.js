@@ -62,34 +62,25 @@ app.use(helmet({
 
 // ── CORS ──────────────────────────────────────────────────────────
 const rawOrigins = process.env.ALLOWED_ORIGINS;
-
-const allowedOrigins = (rawOrigins || 'http://localhost:5173')
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    // allow Postman / server-to-server
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-
-    // IMPORTANT: reject without throwing
-    return callback(null, false);
+    callback(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  preflightContinue: false,
-  optionsSuccessStatus: 204
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
-
-// 🔥 MUST be BEFORE routes
 app.options('*', cors(corsOptions));
 
 app.use(compression());

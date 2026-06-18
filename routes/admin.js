@@ -282,7 +282,7 @@ router.post('/orders/:id/notify-shipped', async (req, res, next) => {
 
     await sendEmail({
       to:       order.user?.email ?? order.customerEmail,
-      subject:  `🚚 Your VitaCore order has shipped!`,
+      subject:  `🚚 Your  order has shipped!`,
       template: 'orderShipped',
       data: {
         name:           order.user?.name ?? order.customerName,

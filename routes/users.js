@@ -88,7 +88,7 @@ router.post('/wishlist/:productId', async (req, res, next) => {
     let action;
     if (idx > -1) {
       user.wishlist.splice(idx, 1);
-      action = 'removed';
+      action = 'add';
     } else {
       const product = await Product.findById(req.params.productId);
       if (!product) return next(new AppError('Product not found', 404));
