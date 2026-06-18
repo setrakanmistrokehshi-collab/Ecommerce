@@ -49,7 +49,7 @@ function baseOptions(url) {
  * @param {object} extraOptions - Merged on top of base options
  * @returns {{ client: Redis | null, isReady: () => boolean }}
  */
-function createClient(label, extraOptions = {}) {
+function getRedisClient(label, extraOptions = {}) {
   const url = process.env.REDIS_URL;
 
   if (!url) {
@@ -115,7 +115,7 @@ function createClient(label, extraOptions = {}) {
 
 // ─── Cache Client (for cacheGet/cacheSet helpers) ─────────────────────────────
 
-const cache = createClient('Cache', {
+const cache = getRedisClient('Cache', {
   maxRetriesPerRequest: 3,
   db: 0,
 });
@@ -123,7 +123,7 @@ const cache = createClient('Cache', {
 // ─── BullMQ Client ────────────────────────────────────────────────────────────
 // BullMQ requires maxRetriesPerRequest: null — it manages its own retries internally
 
-const bullmq = createClient('BullMQ', {
+const bullmq = getRedisClient('BullMQ', {
   maxRetriesPerRequest: null,
   enableOfflineQueue:   true, // BullMQ needs this true
   db: 0,
@@ -273,6 +273,7 @@ module.exports = {
   getBullMQClient,
   getBullMQConnection,
   isRedisReady,
+  getRedisClient,
 
   // Cache helpers
   cacheGet,

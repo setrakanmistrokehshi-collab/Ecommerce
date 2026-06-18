@@ -1,0 +1,42 @@
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:03"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:03"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:03"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:03"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:03"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:03"}
+{"level":"info","message":"✅ Redis [BullMQ] connected","timestamp":"2026-06-18 15:24:04"}
+{"level":"info","message":"✅ Redis [Cache] connected","timestamp":"2026-06-18 15:24:04"}
+{"level":"info","message":"✅ Redis [BullMQ] ready","timestamp":"2026-06-18 15:24:05"}
+{"level":"info","message":"✅ Redis [Cache] ready","timestamp":"2026-06-18 15:24:05"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-06-18 15:24:06"}
+{"level":"info","message":"🚀 Server running on port 3000","timestamp":"2026-06-18 15:24:06"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:36"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:36"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:36"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:36"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:36"}
+{"level":"warn","message":"rate-limit-redis not available — using in-memory rate limiter","timestamp":"2026-06-18 15:24:36"}
+{"level":"info","message":"✅ Redis [Cache] connected","timestamp":"2026-06-18 15:24:38"}
+{"level":"info","message":"✅ Redis [BullMQ] connected","timestamp":"2026-06-18 15:24:38"}
+{"level":"info","message":"✅ Redis [Cache] ready","timestamp":"2026-06-18 15:24:38"}
+{"level":"info","message":"✅ Redis [BullMQ] ready","timestamp":"2026-06-18 15:24:38"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-06-18 15:24:39"}
+{"level":"info","message":"🚀 Server running on port 3000","timestamp":"2026-06-18 15:24:39"}
+{"level":"info","message":"✅ Redis [undefined] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [Cache] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [BullMQ] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] connected","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [BullMQ] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [Cache] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ Redis [undefined] ready","timestamp":"2026-06-18 15:24:46"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-06-18 15:24:47"}
+{"level":"info","message":"🚀 Server running on port 3000","timestamp":"2026-06-18 15:24:47"}
