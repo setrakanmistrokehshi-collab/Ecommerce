@@ -5,11 +5,14 @@ const crypto   = require('crypto');
 const { SignJWT, jwtVerify } = require('jose');
 const { body, validationResult } = require('express-validator');
 
+
 const User        = require('../models/User');
 const { sendEmail }  = require('../utils/email');
 const { AppError }   = require('../middleware/errorHandler');
 const { protect, blockToken } = require('../middleware/auth');
 const logger      = require('../utils/logger');
+const { STAFF_ROLES } = require('../config/permission');
+const { adminLoginLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
@@ -20,10 +23,15 @@ const refreshSecret = new TextEncoder().encode(process.env.JWT_REFRESH_SECRET);
 
 // ── TOKEN HELPERS ─────────────────────────────────────────────────
 
-async function signAccessToken(user) {
+async function signAccessToken(user, accessSecret) {
+
+  const permissions = typeof user.getEffectivePermissions === 'function'
+    ? user.getEffectivePermissions()
+    : [];
   return new SignJWT({
     userId: String(user._id),
-    role:   user.role,         
+    role:   user.role, 
+     permissions,         
     tv:     user.tokenVersion || 0,
   })
     .setProtectedHeader({ alg: 'HS256' })
@@ -46,8 +54,13 @@ async function signRefreshToken(user) {
 // ── RESPONSE HELPER ───────────────────────────────────────────────
 
 async function sendTokenResponse(user, res, statusCode = 200) {
-  const accessToken  = await signAccessToken(user);
+  const accessToken  = await signAccessToken(user, accessSecret);
   const refreshToken = await signRefreshToken(user);
+
+
+  const permissions = typeof user.getEffectivePermissions === 'function'
+    ? user.getEffectivePermissions()
+    : [];
 
   res.status(statusCode).json({
     success: true,
@@ -58,6 +71,7 @@ async function sendTokenResponse(user, res, statusCode = 200) {
       name:  user.name,
       email: user.email,
       role:  user.role,
+       permissions,  
     },
   });
 }
@@ -139,15 +153,28 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
     const { email, password } = req.body;
 
     const user = await User.findOne({ email }).select(
-      '+password +loginAttempts +lockUntil +tokenVersion'
+      '+password +loginAttempts +lockUntil +tokenVersion +role +permissions'
     );
 
-    
     if (!user) return next(new AppError('Invalid credentials', 401));
+
+    // 🔒 LOCK CHECK
     if (user.lockUntil && user.lockUntil > Date.now()) {
-     return next(new AppError('Account temporarily locked. Try again later.', 423));
-     }
-    if (!user.isActive) return next(new AppError('Account has been disabled. Contact support.', 403));
+      return next(new AppError('Account temporarily locked. Try again later.', 423));
+    }
+const isAdminLogin = user.role === 'admin';
+
+if (isAdminLogin) {
+  const ADMIN_MAX_ATTEMPTS = 3;
+
+  if (user.loginAttempts >= ADMIN_MAX_ATTEMPTS) {
+    return next(new AppError('Admin account locked due to suspicious activity', 423));
+  }
+}
+
+    if (!user.isActive) {
+      return next(new AppError('Account has been disabled', 403));
+    }
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
@@ -155,7 +182,58 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
       return next(new AppError('Invalid credentials', 401));
     }
 
-    // Reset failed attempts on successful login
+    // reset login attempts
+    await User.findByIdAndUpdate(user._id, {
+      $set: { loginAttempts: 0, lastLogin: new Date(), lastLoginIp: req.ip },
+      $unset: { lockUntil: 1 }
+    });
+
+    logger.info(`Login: ${email} [IP: ${req.ip}]`);
+    
+
+    return sendTokenResponse(user, res, 200);
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+/**
+ * POST /api/v1/auth/admin-login
+ *
+ * Dedicated login endpoint for the admin dashboard.
+ * Same credential check as /login, but:
+ *   - Stricter rate limit (5 attempts / 15 min vs 10 for regular login)
+ *   - Hard-blocks any account that isn't a staff role, even with correct password
+ *   - Logs every attempt (success and rejected-non-staff) for security monitoring
+ */
+router.post('/admin-login', adminLoginLimiter, loginRules, validate, async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email }).select(
+      '+password +loginAttempts +lockUntil +tokenVersion'
+    );
+
+    if (!user) return next(new AppError('Invalid credentials', 401));
+    if (user.isLocked)  return next(new AppError('Account temporarily locked. Try again later.', 423));
+    if (!user.isActive) return next(new AppError('Account has been disabled. Contact support.', 403));
+
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      await user.incLoginAttempts();
+      logger.warn(`Failed admin login attempt: ${email} [IP: ${req.ip}]`);
+      return next(new AppError('Invalid credentials', 401));
+    }
+
+    // ── ADMIN-ONLY GATE ──────────────────────────────────────────
+    // Block regular customers from this endpoint entirely — even with
+    // the correct password, a non-staff account cannot get a token here.
+    if (!STAFF_ROLES.includes(user.role)) {
+      logger.warn(`Non-staff login attempt on admin portal: ${email} [role: ${user.role}] [IP: ${req.ip}]`);
+      return next(new AppError('This account does not have admin access', 403));
+    }
+
     await User.findByIdAndUpdate(user._id, {
       $set:   { loginAttempts: 0, lastLogin: new Date(), lastLoginIp: req.ip },
       $unset: { lockUntil: 1 },
@@ -163,12 +241,13 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
 
     user.tokenVersion = user.tokenVersion || 0;
 
-    logger.info(`Login: ${email} [IP: ${req.ip}]`);
+    logger.info(`Admin login: ${email} [role: ${user.role}] [IP: ${req.ip}]`);
     return sendTokenResponse(user, res, 200);
   } catch (err) {
     next(err);
   }
 });
+
 
 // ── REFRESH TOKEN ─────────────────────────────────────────────────
 
@@ -273,7 +352,7 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
     user.passwordResetToken   = undefined;
     user.passwordResetExpires = undefined;
     user.loginAttempts        = 0;
-    user.lockUntil            = undefined;
+    user.lockUntil            = Date.now() - 1; // unlock if it was locked
 
     // FIX #2: increment tokenVersion to invalidate ALL existing tokens
     user.tokenVersion = (user.tokenVersion || 0) + 1;
@@ -282,7 +361,7 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
 
     await sendEmail({
       to:       user.email,
-      subject:  'Your VitaCore password was changed',
+      subject:  'Your winners health password was changed',
       template: 'passwordChanged',
       data:     { name: user.name },
     });

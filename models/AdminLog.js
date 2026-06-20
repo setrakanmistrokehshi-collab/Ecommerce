@@ -9,5 +9,7 @@ const adminLogSchema = new mongoose.Schema({
   userAgent: String,
   timestamp: { type: Date, default: Date.now },
 });
+adminLogSchema.index({ adminId: 1 });
+adminLogSchema.index({ timestamp: -1 });
 
 module.exports = mongoose.model('AdminLog', adminLogSchema);

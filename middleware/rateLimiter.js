@@ -96,6 +96,12 @@ const statusLimiter = createLimiter({  // FIX #2: was `rateLimiter` (ReferenceEr
     res.status(429).json({ success: false, error: 'Too many requests. Please wait a moment.' });
   },
 });
+const adminLoginLimiter = createLimiter({
+  windowMs:               15 * 60 * 1000,
+  limit:                  5,            // tighter than regular authLimiter (10)
+  message:                'Too many admin login attempts. Try again in 15 minutes.',
+  skipSuccessfulRequests: true,         // only failed attempts count toward the limit
+});
 
 module.exports = {
   globalLimiter,
@@ -104,4 +110,5 @@ module.exports = {
   reviewLimiter,
   webhookLimiter,
   statusLimiter,
+  adminLoginLimiter
 };

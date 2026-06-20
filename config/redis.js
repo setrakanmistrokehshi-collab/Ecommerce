@@ -57,7 +57,7 @@ function getRedisClient(label, extraOptions = {}) {
     return { client: null, isReady: () => false };
   }
 
-  let ready         = false;
+  let ready  = false;
   let retriesExhausted = false;
 
   const client = new Redis(url, {
@@ -66,7 +66,7 @@ function getRedisClient(label, extraOptions = {}) {
   });
 
   client.on('connect', () => {
-    ready            = true;
+    ready= true;
     retriesExhausted = false;
     logger.info(`✅ Redis [${label}] connected`);
   });
@@ -94,8 +94,8 @@ function getRedisClient(label, extraOptions = {}) {
   client.on('end', () => {
     // 'end' fires when retryStrategy returns null (max retries hit)
     retriesExhausted = true;
-    ready            = false;
-    logger.error(`Redis [${label}] permanently disconnected`);
+    ready  = false;
+    logger.error(`Redis [${label}]  disconnected`);
   });
 
   client.on('reconnecting', (delay) => {
@@ -109,7 +109,7 @@ function getRedisClient(label, extraOptions = {}) {
 
   return {
     client,
-    isReady: () => ready,
+    isReady: () =>ready,
   };
 }
 
