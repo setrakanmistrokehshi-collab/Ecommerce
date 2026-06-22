@@ -212,7 +212,7 @@ router.post('/admin-login', adminLoginLimiter, loginRules, validate, async (req,
     const { email, password } = req.body;
 
     const user = await User.findOne({ email }).select(
-      '+password +loginAttempts +lockUntil +tokenVersion'
+      '+password +loginAttempts +lockUntil +tokenVersion +extraPermissions +revokedPermissions'
     );
 
     if (!user) return next(new AppError('Invalid credentials', 401));

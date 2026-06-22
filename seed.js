@@ -207,7 +207,7 @@ async function seed() {
         name:            'winners Admin',
         email:           adminEmail,
         password:        hashedPassword,       // ← properly hashed
-        role:            'admin',
+        role:            'super_admin',
         isEmailVerified: true,
         isActive:        true,
       },

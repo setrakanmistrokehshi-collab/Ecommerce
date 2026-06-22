@@ -42,9 +42,7 @@ const userSchema = new mongoose.Schema({
     select: false,
   },
 
-  // ── ROLE & PERMISSIONS ──────────────────────────────────────────
-  // FIX #2: `permissions` was incorrectly nested inside this field's
-  // definition — role is just the enum, nothing else.
+  // ── ROLE & PERMISSIONS ──────────────────────────
   role: {
     type: String,
     enum: ['user', 'super_admin', 'product_manager', 'order_manager', 'support_agent'],
@@ -148,14 +146,10 @@ userSchema.methods.incLoginAttempts = async function () {
   return this.updateOne(updates);
 };
 
-// ── PERMISSIONS ───────────────────────────────────────────────────
-// FIX #5: these were declared as bare standalone functions, never
-// attached to userSchema.methods — calling user.hasPermission() would
-// have thrown "not a function". Now correctly attached below.
+// ── PERMISSIONS ──────────────────────────────────
 
 /**
  * Computes the user's effective permission list:
- * role preset + extraPermissions − revokedPermissions
  */
 userSchema.methods.getEffectivePermissions = function () {
   if (this.role === 'user') return []; // regular customers have no admin permissions
