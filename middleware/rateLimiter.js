@@ -1,8 +1,7 @@
 'use strict';
 
 const rateLimit       = require('express-rate-limit');
-const { RedisStore }  = require('rate-limit-redis');
-const { getRedisClient } = require('../config/redis');
+const { RedisStore } = require('rate-limit-redis');
 const logger  = require('../utils/logger');
 
 /**
@@ -34,8 +33,8 @@ function createLimiter({
   if (keyGenerator) options.keyGenerator = keyGenerator;
 
   try {
-    const redisClient = getRedisClient();
-    if (redisClient?.status === 'ready') {
+    const { client: redisClient, isReady } = getRedisClient('Cache');
+    if (redisClient && isReady()) {
       options.store = new RedisStore({
         sendCommand: (...args) => redisClient.call(...args),
       });
@@ -44,7 +43,7 @@ function createLimiter({
     logger.warn('rate-limit-redis not available — using in-memory rate limiter');
   }
 
-  return rateLimit(options); // FIX #1: now correctly calls express-rate-limit
+  return rateLimit(options);
 }
 
 // ── PRESET LIMITERS ───────────────────────────────────────────────
