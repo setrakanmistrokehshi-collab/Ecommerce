@@ -162,7 +162,7 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
     if (user.lockUntil && user.lockUntil > Date.now()) {
       return next(new AppError('Account temporarily locked. Try again later.', 423));
     }
-const isAdminLogin = user.role === 'super-admin';
+const isAdminLogin = user.role === 'super_admin';
 
 if (isAdminLogin) {
   const ADMIN_MAX_ATTEMPTS = 3;
