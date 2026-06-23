@@ -136,7 +136,7 @@ app.get('/health', (req, res) => {
         : 'disconnected',
   });
 });
-app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 
 app.get('/ready', async (req, res) => {
   try {

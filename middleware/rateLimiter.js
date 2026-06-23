@@ -1,20 +1,18 @@
 'use strict';
 
 const rateLimit       = require('express-rate-limit');
-const { RedisStore } = require('rate-limit-redis');
+const { RedisStore }  = require('rate-limit-redis');
+const { getRedisClient } = require('../config/redis');
 const logger  = require('../utils/logger');
 
-/**
- * FIX #1: renamed from `rateLimit` to `createLimiter`
- * so it no longer shadows the express-rate-limit import.
- */
+
 function createLimiter({
   windowMs,
   limit,
   message,
   skipSuccessfulRequests = false,
   keyGenerator,
-  handler,  // FIX #5: now destructured so callers can override
+  handler, 
 }) {
   const options = {
     windowMs,
@@ -33,17 +31,16 @@ function createLimiter({
   if (keyGenerator) options.keyGenerator = keyGenerator;
 
   try {
-    const { client: redisClient, isReady } = getRedisClient('Cache');
+   const { client: redisClient, isReady } = getRedisClient('Cache');
     if (redisClient && isReady()) {
-      options.store = new RedisStore({
+      options.store = new Redis({
         sendCommand: (...args) => redisClient.call(...args),
       });
     }
   } catch (err) {
     logger.warn('rate-limit-redis not available — using in-memory rate limiter');
   }
-
-  return rateLimit(options);
+    return rateLimit(options); 
 }
 
 // ── PRESET LIMITERS ───────────────────────────────────────────────
@@ -88,18 +85,18 @@ const webhookLimiter = createLimiter({
 });
 
 /** Status / health-check endpoints */
-const statusLimiter = createLimiter({  // FIX #2: was `rateLimiter` (ReferenceError)
+const statusLimiter = createLimiter({  
   windowMs: 60 * 1000,
-  limit:    30,                        // FIX #4: was `max` (ignored), now `limit`
+  limit:    30,         
   handler: (req, res) => {
     res.status(429).json({ success: false, error: 'Too many requests. Please wait a moment.' });
   },
 });
 const adminLoginLimiter = createLimiter({
   windowMs:               15 * 60 * 1000,
-  limit:                  5,            // tighter than regular authLimiter (10)
+  limit:                  5,        
   message:                'Too many admin login attempts. Try again in 15 minutes.',
-  skipSuccessfulRequests: true,         // only failed attempts count toward the limit
+  skipSuccessfulRequests: true,  
 });
 
 module.exports = {
