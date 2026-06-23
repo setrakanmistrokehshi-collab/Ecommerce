@@ -106,19 +106,17 @@ userSchema.virtual('isLocked').get(function () {
 });
 
 // ── PRE-SAVE: hash password + bump tokenVersion on change ──────
-userSchema.pre('save', async function (next) {
-  try {
+userSchema.pre('save', async function () {
+  
     if (this.isModified('password')) {
       this.password = await argon2.hash(this.password);
     }
     if (!this.isNew && this.isModified('password')) {
       this.tokenVersion = (this.tokenVersion || 0) + 1;
     }
-    next();
-  } catch (err) {
-    next(err);
+    
   }
-});
+);
 
 // ── METHOD: compare password ────────────────────────────────────
 userSchema.methods.comparePassword = async function (candidatePassword) {

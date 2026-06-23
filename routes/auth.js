@@ -241,7 +241,7 @@ router.post('/admin-login', adminLoginLimiter, loginRules, validate, async (req,
 
     user.tokenVersion = user.tokenVersion || 0;
 
-    logger.info(`Admin login: ${email} [role: ${user.role}] [IP: ${req.ip}]`);
+    logger.info(`Admin-login: ${email} [role: ${user.role}] [IP: ${req.ip}]`);
     return sendTokenResponse(user, res, 200);
   } catch (err) {
     next(err);
