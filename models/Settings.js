@@ -10,8 +10,8 @@ const settingsSchema = new mongoose.Schema(
     _id: { type: String, default: 'store_settings' },
 
     store: {
-      name:    { type: String, default: 'VitaCore Health' },
-      email:   { type: String, default: 'admin@vitacore.ng' },
+      name:    { type: String, default: 'Winners Health' },
+      email:   { type: String, default: 'admin@winners.ng' },
       phone:   { type: String, default: '' },
       address: { type: String, default: 'Lagos, Nigeria' },
       currency:{ type: String, default: 'NGN' },

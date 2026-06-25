@@ -30,6 +30,7 @@ const paymentRoutes = require('./routes/payments');
 const webhookRoutes = require('./routes/webhooks');
 const userRoutes    = require('./routes/users');
 const adminRoutes   = require('./routes/admin');
+const categoryRoutes = require('./routes/categories');
 
 
 const { errorHandler } = require('./middleware/errorHandler');
@@ -156,6 +157,7 @@ app.use('/api/v1/products', productRoutes);
 app.use('/api/v1/orders',   orderRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/admin',    adminRoutes);
+app.use('/api/v1/categories', categoryRoutes);
 app.use('/webhooks/nomba',        webhookRoutes);
 
 // ── API 404 ───────────────────────────────────────────────────────

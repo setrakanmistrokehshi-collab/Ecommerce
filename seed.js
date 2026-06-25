@@ -114,6 +114,7 @@ const PRODUCTS = [
   },
 ];
 
+
 function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -148,61 +149,92 @@ async function seed() {
     }
     console.log(`\n  📦 ${created} created, ${updated} updated\n`);
 
-    // ── ADMIN USER ────────────────────────────────────────────
-    console.log('👤 Seeding admin user...');
+    // ── SUPER ADMIN USER ──────────────────────────────────────
+    console.log('👤 Seeding super admin user...');
 
     const adminEmail = process.env.ADMIN_EMAIL ;
-    const adminPass  = process.env.ADMIN_PASSWORD;
+    const adminPass  = process.env.ADMIN_PASSWORD ;
 
-    if (!adminPass) {
-      console.error('❌ ADMIN_PASSWORD not set in .env — aborting');
-      process.exit(1);
-    }
+    const existingAdmin = await User.findOne({ email: adminEmail });
 
-    const existing = await User.findOne({ email: adminEmail });
-
-    if (existing) {
-      // UPDATE: must assign to instance then .save() to fire pre-save hook
-      console.log('  ↻  Admin already exists — updating password and role...');
-      existing.name            = 'Winners Admin';
-      existing.password        = adminPass;     // plain text here — pre-save hook hashes it
-      existing.role            = 'super_admin';
-      existing.isEmailVerified = true;
-      existing.isActive        = true;
-      await existing.save();                    // ← triggers argon2.hash() in pre('save')
-      console.log(`  ✅ Admin updated: ${adminEmail}`);
-
+    if (existingAdmin) {
+      console.log('  ↻  Super Admin already exists — updating...');
+      existingAdmin.name            = 'Super Admin';
+      existingAdmin.password        = adminPass;
+      existingAdmin.role            = 'super_admin';
+      existingAdmin.isEmailVerified = true;
+      existingAdmin.isActive        = true;
+      await existingAdmin.save();
+      console.log(`  ✅ Super Admin updated: ${adminEmail}`);
     } else {
-      // CREATE: new + .save() fires pre-save hook — NEVER use User.create() for passwords
       const admin = new User({
-        name:            'Winners Admin',
+        name:            'Super Admin',
         email:           adminEmail,
-        password:        adminPass,             // plain text here — pre-save hook hashes it
+        password:        adminPass,
         role:            'super_admin',
         isEmailVerified: true,
         isActive:        true,
       });
-      await admin.save();                       // ← triggers argon2.hash() in pre('save')
-      console.log(`  ✅ Admin created: ${adminEmail}`);
+      await admin.save();
+      console.log(`  ✅ Super Admin created: ${adminEmail}`);
+    }
+
+    // ── PRODUCT MANAGER USER ──────────────────────────────────
+    console.log('👤 Seeding product manager...');
+
+    const pmEmail = process.env.PRODUCT_MANAGER_EMAIL ;
+    const pmPass  = process.env.PRODUCT_MANAGER_PASSWORD ;
+
+    const existingPM = await User.findOne({ email: pmEmail });
+
+    if (existingPM) {
+      console.log('  ↻  Product Manager already exists — updating...');
+      existingPM.name            = 'Product Manager';
+      existingPM.password        = pmPass;
+      existingPM.role            = 'product_manager';
+      existingPM.isEmailVerified = true;
+      existingPM.isActive        = true;
+      await existingPM.save();
+      console.log(`  ✅ Product Manager updated: ${pmEmail}`);
+    } else {
+      const pm = new User({
+        name:            'Product Manager',
+        email:           pmEmail,
+        password:        pmPass,
+        role:            'product_manager',
+        isEmailVerified: true,
+        isActive:        true,
+      });
+      await pm.save();
+      console.log(`  ✅ Product Manager created: ${pmEmail}`);
     }
 
     // ── VERIFY THE HASH WAS ACTUALLY STORED ──────────────────
-    const check    = await User.findOne({ email: adminEmail }).select('+password');
-    const isHashed = check?.password?.startsWith('$argon2');
-
-    console.log(isHashed
-      ? '  🔒 Password is hashed in DB ✅'
-      : '  ⚠️  Password is NOT hashed — check your pre-save hook in models/User.js'
+    const checkAdmin = await User.findOne({ email: adminEmail }).select('+password');
+    const checkPM = await User.findOne({ email: pmEmail }).select('+password');
+    
+    console.log(checkAdmin?.password?.startsWith('$argon2')
+      ? '  🔒 Admin password is hashed in DB ✅'
+      : '  ⚠️  Admin password is NOT hashed — check pre-save hook'
+    );
+    
+    console.log(checkPM?.password?.startsWith('$argon2')
+      ? '  🔒 PM password is hashed in DB ✅'
+      : '  ⚠️  PM password is NOT hashed — check pre-save hook'
     );
 
     // ── DONE ──────────────────────────────────────────────────
     console.log('\n🎉 Seed complete!\n');
     console.log('━'.repeat(44));
-    console.log(`  Admin email:    ${adminEmail}`);
-    console.log(`  Admin password: ${adminPass}`);
-    console.log(`  Admin role:     super_admin`);
+    console.log(`  Super Admin email:    ${adminEmail}`);
+    console.log(`  Super Admin password: ${adminPass}`);
+    console.log(`  Super Admin role:     super_admin`);
     console.log('━'.repeat(44));
-    console.log('  ⚠️  Change the admin password after first login!\n');
+    console.log(`  PM email:             ${pmEmail}`);
+    console.log(`  PM password:          ${pmPass}`);
+    console.log(`  PM role:              product_manager`);
+    console.log('━'.repeat(44));
+    console.log('  ⚠️  Change passwords after first login!\n');
 
   } catch (err) {
     console.error('❌ Seed failed:', err.message);
