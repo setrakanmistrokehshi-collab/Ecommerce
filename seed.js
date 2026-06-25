@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Run with: node utils/seed.js
+ * Run with: node seed.js
  *
  * KEY FIX: Admin user is created with `new User({...}).save()` — NOT
  * findOneAndUpdate() — so the pre('save') hook on the User model fires
@@ -138,7 +138,10 @@ async function seed() {
       const exists = await Product.findOne({ slug });
 
       if (exists) {
-        await Product.findOneAndUpdate({ slug }, { ...p, slug }, { runValidators: true });
+        await Product.findOneAndUpdate({ slug }, { ...p, slug },
+           { runValidators: true,
+            returnDocument: 'after'
+            });
         updated++;
         console.log(`  ↻  ${p.emoji} ${p.name} — updated`);
       } else {
