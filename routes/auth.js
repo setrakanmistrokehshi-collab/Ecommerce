@@ -36,7 +36,7 @@ async function signAccessToken(user, accessSecret) {
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime(process.env.JWT_EXPIRES_IN ?? '15m') // FIX #3: safe fallback
+    .setExpirationTime(process.env.JWT_EXPIRES_IN ?? '10m') // FIX #3: safe fallback
     .sign(accessSecret);
 }
 
@@ -47,7 +47,7 @@ async function signRefreshToken(user) {
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime(process.env.JWT_REFRESH_EXPIRES_IN ?? '7d') // FIX #3: safe fallback
+    .setExpirationTime(process.env.JWT_REFRESH_EXPIRES_IN ?? '24') // FIX #3: safe fallback
     .sign(refreshSecret);
 }
 

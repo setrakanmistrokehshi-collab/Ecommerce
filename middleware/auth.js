@@ -7,6 +7,13 @@ const { AppError }      = require('./errorHandler');
 const { getRedisClient } = require('../config/redis');
 const logger  = require('../utils/logger');
 
+
+
+if (!process.env.JWT_SECRET) {
+  console.error('❌ FATAL: JWT_SECRET environment variable is not set!');
+  throw new Error('JWT_SECRET is required. Please set it in your environment variables.');
+}
+
 // FIX #2: encode secret once at module load — jose requires Uint8Array, not a plain string
 const SECRET = new TextEncoder().encode(process.env.JWT_SECRET);
 
@@ -53,13 +60,13 @@ async function protect(req, res, next) {
       return next(new AppError('Token has been invalidated. Please log in again.', 401));
     }
 
-    // FIX #1 + #2: correct jose verification
+    
     let payload;
     try {
       const result = await jwtVerify(token, SECRET);
       payload = result.payload;
     } catch (err) {
-      // FIX #3: jose uses err.code, not err.name
+      
       if (err.code === 'ERR_JWT_EXPIRED') {
         return next(new AppError('Your session has expired. Please log in again.', 401));
       }

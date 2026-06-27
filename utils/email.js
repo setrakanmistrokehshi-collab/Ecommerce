@@ -94,7 +94,7 @@ function buildTemplate(template, data) {
 
     passwordReset: base(`
       <h1>Reset Your Password</h1>
-      <p>Hi ${data.name}, we received a request to reset your VitaCore password.</p>
+      <p>Hi ${data.name}, we received a request to reset your winners password.</p>
       <a href="${data.resetUrl}" class="btn">Reset Password</a>
       <p style="font-size:13px; color:#8a8a8a;">This link expires in <strong>10 minutes</strong>. If you didn't request a reset, you can safely ignore this email.</p>
       <p style="font-size:13px; color:#8a8a8a;">For security, never share this link with anyone.</p>
