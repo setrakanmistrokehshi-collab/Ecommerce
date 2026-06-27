@@ -35,7 +35,7 @@ const categoryRoutes = require('./routes/categories');
 
 const { errorHandler } = require('./middleware/errorHandler');
 const { sanitizeInput, requestId, limitQueryString } = require('./middleware/sanitize');
-const { globalLimiter, authLimiter, webhookLimiter, adminLoginLimiter } = require('./middleware/rateLimiter');
+const { globalLimiter, authLimiter, webhookLimiter, adminLoginLimiter} = require('./middleware/rateLimiter');
 const logger = require('./utils/logger');
 
 // ── APP INIT ──────────────────────────────────────────────────────
@@ -63,36 +63,28 @@ app.use(helmet({
 
 // ── CORS ──────────────────────────────────────────────────────────
 const rawOrigins = process.env.ALLOWED_ORIGINS;
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
-  .split(',')
-  .map(o => o.trim())
-  .filter(Boolean);
+if (!rawOrigins && process.env.NODE_ENV === 'production') {
+  throw new Error('ALLOWED_ORIGINS must be set in production');
+}
+const allowedOrigins = (rawOrigins || 'http://localhost:5173')
+  .split(',').map(o => o.trim()).filter(Boolean);
 
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    callback(new Error(`CORS blocked: ${origin}`));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} not allowed`));
   },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  credentials:    true,
+  methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  optionsSuccessStatus: 204,
-};
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+}));
 
 app.use(compression());
 app.use(limitQueryString(2048));
 
 // ── BODY PARSERS (hpp must come AFTER these) ──────────────────────
-app.use('/webhooks/nomba',
-express.raw({ type: 'application/json', limit: '100kb' }) 
-  // raw body for webhook signature verification
-);
-app.use('/api/v1/admin/users',  express.json({ limit: '50kb' }));
+app.use('/webhooks',      express.raw({ type: 'application/json', limit: '100kb' }));
+app.use('/api/v1/admin',  express.json({ limit: '50kb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
@@ -109,35 +101,20 @@ app.use(morgan(':method :url :status :res[content-length] - :response-time ms', 
 
 // ── RATE LIMITING ─────────────────────────────────────────────────
 app.use('/api',                             globalLimiter);
-app.use('/api/v1/auth/login',                authLimiter);
+app.use('/api/v1/auth/login',               authLimiter);
 app.use('/api/v1/auth/admin-login',          adminLoginLimiter);
 app.use('/api/v1/auth/register',            authLimiter);
 app.use('/api/v1/auth/forgot-password',     authLimiter);
 app.use('/api/v1/auth/reset-password',      authLimiter);
 app.use('/webhooks',                        webhookLimiter);
 
-// Root route (API identity)
-app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Winners Health API',
-    version: '1.0.0',
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV,
-    database:
-      mongoose.connection.readyState === 1
-        ? 'connected'
-        : 'disconnected',
-  });
-});
-
+// ── HEALTH CHECKS ─────────────────────────────────────────────────
+app.get('/health', (req, res) => res.json({
+  status:    'ok',
+  timestamp: new Date(),
+  uptime:    process.uptime(),
+  env:       process.env.NODE_ENV,
+}));
 
 app.get('/ready', async (req, res) => {
   try {
@@ -156,14 +133,18 @@ app.use('/api/v1/users',    userRoutes);
 app.use('/api/v1/products', productRoutes);
 app.use('/api/v1/orders',   orderRoutes);
 app.use('/api/v1/payments', paymentRoutes);
-app.use('/api/v1/admin',    adminRoutes);
 app.use('/api/v1/categories', categoryRoutes);
-app.use('/webhooks/nomba',        webhookRoutes);
+app.use('/api/v1/admin',    adminRoutes);
+app.use('/api/v1/admin/users',    adminRoutes);
+app.use('/api/v1/webhooks',        webhookRoutes);
 
 // ── API 404 ───────────────────────────────────────────────────────
 app.use('/api', (req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.originalUrl} not found` });
 });
+
+
+  
 
 // ── ERROR HANDLER (must be last) ──────────────────────────────────
 app.use(errorHandler);
@@ -173,9 +154,9 @@ async function connectDB() {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
     logger.info('✅ MongoDB connected');
-  } catch (error) {
-    // Log full error object — error.message alone can be empty for some mongoose errors
-    logger.error('❌ MongoDB connection failed:', error);
+  } catch (err) {
+    // Log full error object — err.message alone can be empty for some mongoose errors
+    logger.error('❌ MongoDB connection failed:', err);
     process.exit(1);
   }
 }
@@ -208,7 +189,7 @@ const PORT = process.env.PORT || 3000;
 
 connectDB().then(() => {
   server = app.listen(PORT, () => {
-    logger.info(`🚀 Server running on port ${PORT}`);
+    logger.info(`🚀 Server running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
 
   server.timeout          = 30_000;
@@ -224,8 +205,8 @@ connectDB().then(() => {
     process.exit(1);
   });
 
-  process.on('uncaughtException', (error) => {
-    logger.error('Uncaught exception (terminating):', error);
+  process.on('uncaughtException', (err) => {
+    logger.error('Uncaught exception (terminating):', err);
     process.exit(1);
   });
 });
