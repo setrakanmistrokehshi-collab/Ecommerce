@@ -109,6 +109,21 @@ app.use('/api/v1/auth/reset-password',      authLimiter);
 app.use('/webhooks',                        webhookLimiter);
 
 // ── HEALTH CHECKS ─────────────────────────────────────────────────
+
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Welcome to the API',
+    version: '2.0.0',
+    status: 'running',
+    endpoints: {
+      auth: '/api/v1/auth',
+      
+      health: '/health',
+      // Add other endpoints here
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
 app.get('/health', (req, res) => res.json({
   status:    'ok',
   timestamp: new Date(),

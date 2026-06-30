@@ -13,6 +13,7 @@
     "migrate": "node utils/migrate.js"
   },
   "dependencies": {
+    "@getbrevo/brevo": "^5.0.4",
     "argon2": "^0.44.0",
     "axios": "^1.6.0",
     "bullmq": "^5.78.1",
@@ -34,8 +35,8 @@
     "morgan": "^1.10.0",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
-    "nodemailer": "^8.0.10",
     "rate-limit-redis": "^4.3.1",
+    "resend": "^6.16.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {

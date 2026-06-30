@@ -377,39 +377,48 @@ router.post('/forgot-password', async (req, res, next) => {
 });
 
 // ── RESET PASSWORD ────────────────────────────────────────────────
-
 router.post('/reset-password', resetPasswordRules, validate, async (req, res, next) => {
   try {
     const hashed = crypto.createHash('sha256').update(req.body.token).digest('hex');
 
     const user = await User.findOne({
-      passwordResetToken: hashed,
+      passwordResetToken:   hashed,
       passwordResetExpires: { $gt: Date.now() },
-    }).select('+tokenVersion');
+    }).select('+tokenVersion +password');
 
-    if (!user) return next(new AppError('Reset link is invalid or has expired', 400));
+    if (!user) {
+      return next(new AppError('Reset link is invalid or has expired', 400));
+    }
 
-    user.password = req.body.password;
-    user.passwordResetToken = undefined;
+    // Reject same password
+    const isSamePassword = await argon2.verify(user.password, req.body.password);
+    if (isSamePassword) {
+      return next(new AppError('New password must be different from your current password', 400));
+    }
+
+    user.password             = req.body.password;
+    user.passwordResetToken   = undefined;
     user.passwordResetExpires = undefined;
-    user.loginAttempts = 0;
-    user.lockUntil = Date.now() - 1;
-    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.loginAttempts        = 0;
+    user.lockUntil            = undefined;       // cleaner than Date.now() - 1
+    user.tokenVersion         = (user.tokenVersion || 0) + 1;
 
     await user.save();
 
-    await sendEmail({
-      to: user.email,
-      subject: 'Your password was changed',
+    // Fire-and-forget — don't let mail failure break the reset
+    sendEmail({
+      to:       user.email,
+      subject:  'Your password was changed',
       template: 'passwordChanged',
-      data: { name: user.name },
-    });
+      data:     { name: user.name },
+    }).catch(err => console.error('[password-reset] confirmation email failed:', err));
 
-    return sendTokenResponse(user, req, res, 200); // ← FIXED: added req
+    return sendTokenResponse(user, req, res, 200);
   } catch (err) {
     next(err);
   }
 });
+
 
 // ── ME ────────────────────────────────────────────────────────────
 
