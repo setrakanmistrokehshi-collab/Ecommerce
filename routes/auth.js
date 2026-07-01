@@ -2,14 +2,15 @@
 
 const express  = require('express');
 const crypto   = require('crypto');
+const argon2 = require('argon2');
 const { SignJWT, jwtVerify } = require('jose');
 const { body, validationResult } = require('express-validator');
 
 const User        = require('../models/User');
-const RefreshToken = require('../models/RefreshToken'); // ← ADD THIS
+const RefreshToken = require('../models/RefreshToken');
 const { sendEmail }  = require('../utils/email');
 const { AppError }   = require('../middleware/errorHandler');
-const { protect, blockToken } = require('../middleware/auth');
+const { protect, blockToken, restrictTo } = require('../middleware/auth');
 const logger      = require('../utils/logger');
 const { STAFF_ROLES } = require('../config/permission');
 const { adminLoginLimiter } = require('../middleware/rateLimiter');
@@ -21,8 +22,6 @@ const accessSecret  = new TextEncoder().encode(process.env.JWT_SECRET);
 const refreshSecret = new TextEncoder().encode(process.env.JWT_REFRESH_SECRET);
 
 // ── HELPERS ───────────────────────────────────────────────────────
-
-// Helper for device fingerprint - MOVED OUTSIDE
 function createDeviceFingerprint(req) {
   const data = [
     req.headers['user-agent'],
@@ -33,7 +32,6 @@ function createDeviceFingerprint(req) {
 }
 
 // ── TOKEN HELPERS ─────────────────────────────────────────────────
-
 async function signAccessToken(user) {
   const permissions = typeof user.getEffectivePermissions === 'function'
     ? user.getEffectivePermissions()
@@ -55,7 +53,6 @@ async function signRefreshToken(user, req, rotate = false) {
   let tokenVersion = user.tokenVersion || 0;
   const tokenId = crypto.randomBytes(64).toString('hex');
   
-  // Increment version on rotation
   if (rotate) {
     tokenVersion = (tokenVersion || 0) + 1;
     await User.findByIdAndUpdate(user._id, { 
@@ -74,7 +71,6 @@ async function signRefreshToken(user, req, rotate = false) {
     .setExpirationTime(process.env.JWT_REFRESH_EXPIRES_IN ?? '24h')
     .sign(refreshSecret);
   
-  // Optional: Store in database
   if (process.env.ENABLE_REFRESH_TOKEN_DB === 'true') {
     await RefreshToken.create({
       tokenId,
@@ -113,7 +109,6 @@ async function sendTokenResponse(user, req, res, statusCode = 200) {
 }
 
 // ── REFRESH TOKEN ENDPOINT ──────────────────────────────────────
-
 async function refreshAccessToken(req, res, next) {
   try {
     const { refreshToken } = req.body;
@@ -121,7 +116,6 @@ async function refreshAccessToken(req, res, next) {
       return next(new AppError('Refresh token required', 400));
     }
 
-    // Verify token
     let payload;
     try {
       const result = await jwtVerify(refreshToken, refreshSecret);
@@ -133,22 +127,18 @@ async function refreshAccessToken(req, res, next) {
       return next(new AppError('Invalid refresh token', 401));
     }
 
-    // Get user
     const user = await User.findById(payload.userId).select('+tokenVersion');
     if (!user || !user.isActive) {
       return next(new AppError('User not found or inactive', 401));
     }
 
-    // Check token version - DETECTS ROTATION
     if (payload.tv !== user.tokenVersion) {
-      // Token was rotated - invalidate all tokens
       await User.findByIdAndUpdate(user._id, { 
         $inc: { tokenVersion: 1 }
       });
       return next(new AppError('Token revoked - please login again', 401));
     }
 
-    // ROTATE: Generate new tokens
     const newAccessToken = await signAccessToken(user, accessSecret);
     const newRefreshToken = await signRefreshToken(user, req, true);
 
@@ -164,7 +154,6 @@ async function refreshAccessToken(req, res, next) {
 }
 
 // ── VALIDATION ────────────────────────────────────────────────────
-
 const registerRules = [
   body('name').trim().notEmpty().withMessage('Name is required').isLength({ max: 60 }),
   body('email').isEmail().normalizeEmail(),
@@ -197,7 +186,6 @@ function validate(req, res, next) {
 }
 
 // ── REGISTER ──────────────────────────────────────────────────────
-
 router.post('/register', registerRules, validate, async (req, res, next) => {
   try {
     const { name, email, password, phone } = req.body;
@@ -227,14 +215,13 @@ router.post('/register', registerRules, validate, async (req, res, next) => {
     });
 
     logger.info(`New user registered: ${email} [IP: ${req.ip}]`);
-    return sendTokenResponse(user, req, res, 201); // ← FIXED: added req
+    return sendTokenResponse(user, req, res, 201);
   } catch (err) {
     next(err);
   }
 });
 
 // ── LOGIN ─────────────────────────────────────────────────────────
-
 router.post('/login', loginRules, validate, async (req, res, next) => {
   try {
     const { email, password } = req.body;
@@ -273,14 +260,13 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
     });
 
     logger.info(`Login: ${email} [IP: ${req.ip}]`);
-    return sendTokenResponse(user, req, res, 200); // ← FIXED: added req
+    return sendTokenResponse(user, req, res, 200);
   } catch (err) {
     next(err);
   }
 });
 
 // ── ADMIN LOGIN ─────────────────────────────────────────────────
-
 router.post('/admin-login', adminLoginLimiter, loginRules, validate, async (req, res, next) => {
   try {
     const { email, password } = req.body;
@@ -312,18 +298,16 @@ router.post('/admin-login', adminLoginLimiter, loginRules, validate, async (req,
 
     user.tokenVersion = user.tokenVersion || 0;
     logger.info(`Admin-login: ${email} [role: ${user.role}] [IP: ${req.ip}]`);
-    return sendTokenResponse(user, req, res, 200); // ← FIXED: added req
+    return sendTokenResponse(user, req, res, 200);
   } catch (err) {
     next(err);
   }
 });
 
 // ── REFRESH TOKEN ─────────────────────────────────────────────────
-
-router.post('/refresh-token', refreshAccessToken); // ← FIXED: using the function
+router.post('/refresh-token', refreshAccessToken);
 
 // ── VERIFY EMAIL ──────────────────────────────────────────────────
-
 router.get('/verify-email/:token', async (req, res, next) => {
   try {
     const hashed = crypto.createHash('sha256').update(req.params.token).digest('hex');
@@ -347,7 +331,6 @@ router.get('/verify-email/:token', async (req, res, next) => {
 });
 
 // ── FORGOT PASSWORD ───────────────────────────────────────────────
-
 router.post('/forgot-password', async (req, res, next) => {
   try {
     const user = await User.findOne({ email: req.body.email });
@@ -390,7 +373,6 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
       return next(new AppError('Reset link is invalid or has expired', 400));
     }
 
-    // Reject same password
     const isSamePassword = await argon2.verify(user.password, req.body.password);
     if (isSamePassword) {
       return next(new AppError('New password must be different from your current password', 400));
@@ -400,12 +382,11 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
     user.passwordResetToken   = undefined;
     user.passwordResetExpires = undefined;
     user.loginAttempts        = 0;
-    user.lockUntil            = undefined;       // cleaner than Date.now() - 1
+    user.lockUntil            = undefined;
     user.tokenVersion         = (user.tokenVersion || 0) + 1;
 
     await user.save();
 
-    // Fire-and-forget — don't let mail failure break the reset
     sendEmail({
       to:       user.email,
       subject:  'Your password was changed',
@@ -419,9 +400,63 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
   }
 });
 
+// ── CHANGE PASSWORD (Admin) ──────────────────────────────────────
+// ✅ FIXED: Using PUT instead of POST, and restrictTo allows both admin and super_admin
+router.put('/admin/settings/password', 
+  protect, 
+  validate,
+  restrictTo('super_admin', 'role_admin'), 
+  async (req, res, next) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      
+      if (!currentPassword || !newPassword) {
+        return next(new AppError('Current password and new password are required', 400));
+      }
+      
+      if (newPassword.length < 8) {
+        return next(new AppError('New password must be at least 8 characters', 400));
+      }
+      
+      const user = await User.findById(req.user._id).select('+password +tokenVersion');
+      
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+      
+      const isMatch = await user.comparePassword(currentPassword);
+      if (!isMatch) {
+        return next(new AppError('Current password is incorrect', 401));
+      }
+      
+      const isSamePassword = await argon2.verify(user.password, newPassword);
+      if (isSamePassword) {
+        return next(new AppError('New password must be different from your current password', 400));
+      }
+      
+      user.password = newPassword;
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      await user.save();
+      
+      sendEmail({
+        to: user.email,
+        subject: 'Your admin password was changed',
+        template: 'passwordChanged',
+        data: { name: user.name },
+      }).catch(err => console.error('[password-change] email failed:', err));
+      
+      res.json({
+        success: true,
+        message: 'Password changed successfully. Please login again.'
+      });
+      
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // ── ME ────────────────────────────────────────────────────────────
-
 router.get('/me', protect, async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
@@ -438,7 +473,6 @@ router.get('/me', protect, async (req, res, next) => {
 });
 
 // ── LOGOUT ────────────────────────────────────────────────────────
-
 router.post('/logout', protect, async (req, res, next) => {
   try {
     const { payload } = await jwtVerify(req.token, accessSecret);
@@ -452,7 +486,6 @@ router.post('/logout', protect, async (req, res, next) => {
 });
 
 // ── LOGOUT ALL DEVICES ────────────────────────────────────────────
-
 router.post('/logout-all', protect, async (req, res, next) => {
   try {
     await User.findByIdAndUpdate(req.user._id, {

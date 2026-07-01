@@ -116,8 +116,6 @@ app.get('/', (req, res) => {
     version: '2.0.0',
     status: 'running',
     endpoints: {
-      auth: '/api/v1/auth',
-      
       health: '/health',
       // Add other endpoints here
     },
