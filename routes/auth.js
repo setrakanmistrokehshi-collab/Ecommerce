@@ -404,8 +404,7 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
 // ✅ FIXED: Using PUT instead of POST, and restrictTo allows both admin and super_admin
 router.put('/admin/settings/password', 
   protect, 
-  validate,
-  restrictTo('super_admin', 'role_admin'), 
+   restrictTo('super_admin', 'product_manager', 'order_manager', 'support_agent'),
   async (req, res, next) => {
     try {
       const { currentPassword, newPassword } = req.body;
