@@ -2,6 +2,7 @@
 // routes/admin.js 
 
 const express = require('express');
+const argon2 = require('argon2');
 const { body, query, param, validationResult } = require('express-validator');
 const Order   = require('../models/Order');
 const Product = require('../models/Product');
@@ -358,6 +359,57 @@ router.delete('/reviews/:id', requirePermission(PERMISSIONS.REVIEWS_DELETE), [pa
 // ─────────────────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────────────────
+
+
+// ── CHANGE PASSWORD ──────────────────────────────────────────────
+router.put('/settings/password', 
+  requirePermission(PERMISSIONS.SETTINGS_UPDATE),
+  [
+    body('currentPassword').notEmpty().withMessage('Current password is required'),
+    body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+  ],
+  validate,
+  async (req, res, next) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      
+      const user = await User.findById(req.user._id).select('+password +tokenVersion');
+      
+      if (!user) {
+        return next(new AppError('User not found', 404));
+      }
+      
+      const isMatch = await user.comparePassword(currentPassword);
+      if (!isMatch) {
+        return next(new AppError('Current password is incorrect', 401));
+      }
+      
+      const isSamePassword = await argon2.verify(user.password, newPassword);
+      if (isSamePassword) {
+        return next(new AppError('New password must be different from your current password', 400));
+      }
+      
+      user.password = newPassword;
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      await user.save();
+      
+      sendEmail({
+        to: user.email,
+        subject: 'Your admin password was changed',
+        template: 'passwordChanged',
+        data: { name: user.name },
+      }).catch(err => console.error('[password-change] email failed:', err));
+      
+      res.json({
+        success: true,
+        message: 'Password changed successfully. Please login again.'
+      });
+      
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 router.get('/settings', requirePermission(PERMISSIONS.SETTINGS_VIEW), getSettings);
 
