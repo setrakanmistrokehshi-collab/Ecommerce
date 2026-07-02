@@ -56,7 +56,7 @@ function buildTemplate(template, data) {
 
   const templates = {
     welcome: base(`
-      <h1>Welcome to VitaCore, ${data.name}!</h1>
+      <h1>Welcome to Winners Health, ${data.name}!</h1>
       <p>We're thrilled to have you join thousands of Nigerians on a journey to better health.</p>
       <p>Please verify your email address to unlock your account:</p>
       <a href="${data.verifyUrl}" class="btn">Verify My Email</a>
@@ -148,8 +148,8 @@ async function sendEmail({ to, subject, template, data, html }) {
 
     const message = new Brevo.SendSmtpEmail();
     message.sender  = {
-      name:  process.env.EMAIL_FROM_NAME    || 'Winners Health',
-      email: process.env.EMAIL_FROM_ADDRESS || 'no-reply@winnershealth.ng',
+      name:  process.env.EMAIL_FROM_NAME   ,
+      email: process.env.EMAIL_FROM_ADDRESS ,
     };
     message.to      = [{ email: to }];
     message.subject = subject;
