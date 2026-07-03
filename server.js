@@ -79,6 +79,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
 }));
 
+
 app.use(compression());
 app.use(limitQueryString(2048));
 

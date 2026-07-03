@@ -9,7 +9,6 @@ let apiInstance;
 function getClient() {
   if (apiInstance) return apiInstance;
 
-  // ✅ FIXED: Proper API key authentication
   const defaultClient = Brevo.ApiClient.instance;
   defaultClient.authentications['api-key'].apiKey = process.env.BREVO_API_KEY;
 
@@ -39,6 +38,10 @@ function buildTemplate(template, data) {
         .footer { text-align: center; font-size: 12px; color: #8a8a8a; margin-top: 24px; line-height: 1.8; }
         .badge { background: #d8f3dc; color: #2d6a4f; border-radius: 999px; padding: 4px 14px; font-size: 12px; font-weight: 600; display: inline-block; }
         .email-note { font-size: 12px; color: #8a8a8a; background: #f5f5f5; padding: 8px 12px; border-radius: 6px; margin-top: 12px; }
+        .alert-box { background: #fff8f0; border-left: 4px solid #f59e0b; padding: 16px; margin: 16px 0; border-radius: 8px; }
+        .device-info { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0; }
+        .device-tag { background: #f0f0f0; padding: 4px 12px; border-radius: 999px; font-size: 13px; }
+        .ip-address { font-family: monospace; background: #f0f0f0; padding: 4px 12px; border-radius: 4px; font-size: 14px; }
       </style>
     </head>
     <body>
@@ -139,6 +142,96 @@ function buildTemplate(template, data) {
       </div>
       <a href="${process.env.BASE_URL}/admin/products/${data.productId}" class="btn">Update Stock</a>
     `),
+
+    // ✅ NEW: Login Alert Template
+    loginAlert: base(`
+      <h1>🔐 New Login Detected</h1>
+      <p>Hi ${data.name},</p>
+      <p>We noticed a new login to your Winners Health account. If this was you, you can safely ignore this email.</p>
+      
+      <div class="alert-box">
+        <strong style="color:#1a3a2a;">Login Details:</strong>
+        <div style="margin-top: 10px;">
+          <div class="device-info">
+            <span class="device-tag">🌐 ${data.browser || 'Unknown Browser'}</span>
+            <span class="device-tag">💻 ${data.os || 'Unknown OS'}</span>
+            <span class="device-tag">📱 ${data.device || 'Unknown Device'}</span>
+          </div>
+          <p style="margin-top: 8px;">
+            <span style="color:#6b7280;">IP Address:</span>
+            <span class="ip-address">${data.ip || 'Unknown IP'}</span>
+          </p>
+          <p style="margin: 4px 0;">
+            <span style="color:#6b7280;">Location:</span>
+            <strong>${data.location || 'Unknown Location'}</strong>
+          </p>
+          <p style="margin: 4px 0;">
+            <span style="color:#6b7280;">Time:</span>
+            <strong>${data.time || new Date().toLocaleString()}</strong>
+          </p>
+        </div>
+      </div>
+
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:16px;margin:16px 0;">
+        <strong style="color:#dc2626;">⚠️ If this wasn't you:</strong>
+        <ul style="margin: 8px 0; padding-left: 20px; color: #5a5a5a; font-size: 14px; line-height: 1.8;">
+          <li>Change your password immediately</li>
+          <li>Contact our support team at <a href="mailto:support@winnershealth.com" style="color:#2d6a4f;">support@winnershealth.com</a></li>
+          <li>Enable Two-Factor Authentication for extra security</li>
+        </ul>
+      </div>
+
+      <hr class="divider">
+      <p style="font-size:13px;color:#8a8a8a;">
+        This is an automated security notification. Please do not reply to this email.
+      </p>
+    `),
+
+    // ✅ NEW: Suspicious Login Alert (stricter warning)
+    suspiciousLogin: base(`
+      <h1>🚨 Suspicious Login Attempt</h1>
+      <p>Hi ${data.name},</p>
+      <p>We detected a login attempt from an unrecognized device or location. For your security, we've temporarily locked your account.</p>
+      
+      <div class="alert-box" style="border-left-color: #dc2626;">
+        <strong style="color:#dc2626;">Suspicious Activity Detected:</strong>
+        <div style="margin-top: 10px;">
+          <div class="device-info">
+            <span class="device-tag">🌐 ${data.browser || 'Unknown Browser'}</span>
+            <span class="device-tag">💻 ${data.os || 'Unknown OS'}</span>
+            <span class="device-tag">📱 ${data.device || 'Unknown Device'}</span>
+          </div>
+          <p style="margin-top: 8px;">
+            <span style="color:#6b7280;">IP Address:</span>
+            <span class="ip-address">${data.ip || 'Unknown IP'}</span>
+          </p>
+          <p style="margin: 4px 0;">
+            <span style="color:#6b7280;">Location:</span>
+            <strong>${data.location || 'Unknown Location'}</strong>
+          </p>
+          <p style="margin: 4px 0;">
+            <span style="color:#6b7280;">Time:</span>
+            <strong>${data.time || new Date().toLocaleString()}</strong>
+          </p>
+        </div>
+      </div>
+
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:16px;margin:16px 0;">
+        <strong style="color:#dc2626;">⚠️ Action Required:</strong>
+        <ul style="margin: 8px 0; padding-left: 20px; color: #5a5a5a; font-size: 14px; line-height: 1.8;">
+          <li><strong>Immediately change your password</strong></li>
+          <li>Review your recent activity in account settings</li>
+          <li>Contact support if you need assistance</li>
+        </ul>
+      </div>
+
+      <a href="${process.env.BASE_URL}/reset-password" class="btn">Change Password Now</a>
+
+      <hr class="divider">
+      <p style="font-size:13px;color:#8a8a8a;">
+        If this was you, you can ignore this email and your account will remain secure.
+      </p>
+    `),
   };
 
   return templates[template]
@@ -148,12 +241,10 @@ function buildTemplate(template, data) {
 // ── SEND FUNCTION ─────────────────────────────────────────────────
 async function sendEmail({ to, subject, template, data, html }) {
   try {
-    // ✅ Validate required environment variables
     if (!process.env.BREVO_API_KEY) {
       throw new Error('BREVO_API_KEY is not set in environment variables');
     }
 
-    // ✅ Use verified sender email (your personal Gmail)
     const senderEmail = process.env.EMAIL_FROM_ADDRESS || 'your-verified-email@gmail.com';
     const senderName = process.env.EMAIL_FROM_NAME || 'Winners Health';
 
@@ -164,27 +255,21 @@ async function sendEmail({ to, subject, template, data, html }) {
     const client = getClient();
     const emailHtml = html || buildTemplate(template, data || {});
 
-    // ✅ Build the email message
     const message = new Brevo.SendSmtpEmail();
     message.sender = {
       name: senderName,
-      email: senderEmail, // ← Your verified personal email
+      email: senderEmail,
     };
     message.to = [{ email: to }];
     message.subject = subject;
     message.htmlContent = emailHtml;
     
-    // ✅ Optional: Add reply-to so replies go to you
     message.replyTo = {
       email: senderEmail,
       name: senderName,
     };
 
-    // ✅ Optional: Add plain text fallback for better deliverability
-    // message.textContent = `Plain text version of ${subject}`;
-
     logger.info(`📧 Sending email to ${to}: "${subject}"`);
-    logger.debug(`📧 From: ${senderEmail} (${senderName})`);
 
     const response = await client.sendTransacEmail(message);
 
@@ -192,13 +277,11 @@ async function sendEmail({ to, subject, template, data, html }) {
     return response;
 
   } catch (err) {
-    // ✅ Detailed error logging
     logger.error(`❌ Email failed to ${to}: ${err.message}`);
     
     if (err.response) {
       logger.error(`📋 Brevo API Error Response: ${JSON.stringify(err.response.body || err.response.text)}`);
       
-      // ✅ Common error messages
       if (err.response.body?.message?.includes('sender')) {
         logger.error('⚠️  Sender email not verified. Please verify your email in Brevo Dashboard → Senders & Domains → Senders');
       }
@@ -212,6 +295,42 @@ async function sendEmail({ to, subject, template, data, html }) {
 
     throw err;
   }
+}
+
+// ── HELPER: Send login alert ──────────────────────────────────────
+async function sendLoginAlert(email, name, loginData) {
+  return sendEmail({
+    to: email,
+    subject: '🔐 New Login to Your Winners Health Account',
+    template: 'loginAlert',
+    data: {
+      name: name,
+      browser: loginData?.browser || 'Unknown Browser',
+      os: loginData?.os || 'Unknown OS',
+      device: loginData?.device || 'Unknown Device',
+      ip: loginData?.ip || 'Unknown IP',
+      location: loginData?.location || 'Unknown Location',
+      time: loginData?.time || new Date().toLocaleString(),
+    },
+  });
+}
+
+// ── HELPER: Send suspicious login alert ──────────────────────────
+async function sendSuspiciousLoginAlert(email, name, loginData) {
+  return sendEmail({
+    to: email,
+    subject: '🚨 Suspicious Login Attempt on Your Winners Health Account',
+    template: 'suspiciousLogin',
+    data: {
+      name: name,
+      browser: loginData?.browser || 'Unknown Browser',
+      os: loginData?.os || 'Unknown OS',
+      device: loginData?.device || 'Unknown Device',
+      ip: loginData?.ip || 'Unknown IP',
+      location: loginData?.location || 'Unknown Location',
+      time: loginData?.time || new Date().toLocaleString(),
+    },
+  });
 }
 
 // ── HELPER: Test email function ──────────────────────────────────
@@ -236,4 +355,9 @@ async function testEmail() {
   }
 }
 
-module.exports = { sendEmail, testEmail };
+module.exports = { 
+  sendEmail, 
+  testEmail,
+  sendLoginAlert,
+  sendSuspiciousLoginAlert,
+};

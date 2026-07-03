@@ -3,6 +3,7 @@
 const express  = require('express');
 const crypto   = require('crypto');
 const argon2 = require('argon2');
+const useragent = require('express-useragent'); 
 const { SignJWT, jwtVerify } = require('jose');
 const { body, validationResult } = require('express-validator');
 
@@ -14,6 +15,8 @@ const { protect, blockToken, restrictTo } = require('../middleware/auth');
 const logger      = require('../utils/logger');
 const { STAFF_ROLES } = require('../config/permission');
 const { adminLoginLimiter } = require('../middleware/rateLimiter');
+const { sendLoginAlert } = require('../utils/email');
+
 
 const router = express.Router();
 
@@ -222,7 +225,7 @@ router.post('/register', registerRules, validate, async (req, res, next) => {
 });
 
 // ── LOGIN ─────────────────────────────────────────────────────────
-router.post('/login', loginRules, validate, async (req, res, next) => {
+router.post('/login', useragent.express(), loginRules, validate, async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
@@ -232,10 +235,12 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
 
     if (!user) return next(new AppError('Invalid credentials', 401));
 
+    // Check if account is locked
     if (user.lockUntil && user.lockUntil > Date.now()) {
       return next(new AppError('Account temporarily locked. Try again later.', 423));
     }
 
+    // Admin-specific checks
     const isAdminLogin = user.role === 'super_admin';
     if (isAdminLogin) {
       const ADMIN_MAX_ATTEMPTS = 3;
@@ -248,26 +253,51 @@ router.post('/login', loginRules, validate, async (req, res, next) => {
       return next(new AppError('Account has been disabled', 403));
     }
 
+    // ✅ Verify password FIRST
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       await user.incLoginAttempts();
       return next(new AppError('Invalid credentials', 401));
     }
 
+    // ✅ ONLY AFTER successful login - update user
     await User.findByIdAndUpdate(user._id, {
       $set: { loginAttempts: 0, lastLogin: new Date(), lastLoginIp: req.ip },
       $unset: { lockUntil: 1 }
     });
 
-    logger.info(`Login: ${email} [IP: ${req.ip}]`);
+    // ✅ Send login alert email (only for successful logins)
+    try {
+      const ua = req.useragent;
+      
+      await sendLoginAlert(
+        user.email,
+        user.name,
+        {
+          browser: ua?.browser || 'Unknown Browser',
+          os: ua?.os || 'Unknown OS',
+          device: ua?.platform || 'Unknown Device',
+          ip: req.ip || req.connection.remoteAddress,
+          location: req.geolocation?.city || 'Unknown Location',
+          time: new Date().toLocaleString(),
+        }
+      );
+      logger.info(`📧 Login alert sent to ${user.email}`);
+    } catch (emailErr) {
+      // Don't block login if email fails
+      logger.warn('⚠️ Login alert email failed:', emailErr.message);
+    }
+
+    logger.info(`✅ Login successful: ${email} [IP: ${req.ip}]`);
     return sendTokenResponse(user, req, res, 200);
+    
   } catch (err) {
     next(err);
   }
 });
 
 // ── ADMIN LOGIN ─────────────────────────────────────────────────
-router.post('/admin-login', adminLoginLimiter, loginRules, validate, async (req, res, next) => {
+router.post('/admin-login', useragent.express(), adminLoginLimiter, loginRules, validate, async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
