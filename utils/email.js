@@ -143,17 +143,25 @@ function buildTemplate(template, data) {
 // ── SEND FUNCTION ─────────────────────────────────────────────────
 async function sendEmail({ to, subject, template, data, html }) {
   try {
-    const client   = getClient();
+    const client = getClient();
     const emailHtml = html || buildTemplate(template, data || {});
+    
+    // ✅ ADDED: Check if sender email is configured
+    if (!process.env.EMAIL_FROM_ADDRESS) {
+      throw new Error('EMAIL_FROM_ADDRESS is not set in environment variables');
+    }
 
     const message = new Brevo.SendSmtpEmail();
-    message.sender  = {
-      name:  process.env.EMAIL_FROM_NAME   ,
-      email: process.env.EMAIL_FROM_ADDRESS ,
+    message.sender = {
+      name: process.env.EMAIL_FROM_NAME || 'Winners Health',
+      email: process.env.EMAIL_FROM_ADDRESS,
     };
-    message.to      = [{ email: to }];
+    message.to = [{ email: to }];
     message.subject = subject;
     message.htmlContent = emailHtml;
+    
+    // ✅ ADDED: Optional plain text fallback for better deliverability
+    // message.textContent = `Plain text version of ${subject}`;
 
     const response = await client.sendTransacEmail(message);
 
@@ -161,6 +169,10 @@ async function sendEmail({ to, subject, template, data, html }) {
     return response;
   } catch (err) {
     logger.error(`Email failed to ${to}: ${err.message}`);
+    // ✅ ADDED: Log the full error for debugging
+    if (err.response) {
+      logger.error(`Brevo API Error: ${err.response.body || err.response.text}`);
+    }
     throw err;
   }
 }
