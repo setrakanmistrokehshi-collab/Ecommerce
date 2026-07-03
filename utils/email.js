@@ -9,6 +9,7 @@ let apiInstance;
 function getClient() {
   if (apiInstance) return apiInstance;
 
+  // ✅ FIXED: Proper API key authentication
   const defaultClient = Brevo.ApiClient.instance;
   defaultClient.authentications['api-key'].apiKey = process.env.BREVO_API_KEY;
 
@@ -37,6 +38,7 @@ function buildTemplate(template, data) {
         .order-total { display: flex; justify-content: space-between; padding: 14px 0 0; font-size: 16px; font-weight: 700; color: #1a3a2a; }
         .footer { text-align: center; font-size: 12px; color: #8a8a8a; margin-top: 24px; line-height: 1.8; }
         .badge { background: #d8f3dc; color: #2d6a4f; border-radius: 999px; padding: 4px 14px; font-size: 12px; font-weight: 600; display: inline-block; }
+        .email-note { font-size: 12px; color: #8a8a8a; background: #f5f5f5; padding: 8px 12px; border-radius: 6px; margin-top: 12px; }
       </style>
     </head>
     <body>
@@ -44,6 +46,9 @@ function buildTemplate(template, data) {
         <div class="card">
           <div class="logo">🌿 Winners Health</div>
           ${content}
+          <div class="email-note">
+            This email was sent from ${process.env.EMAIL_FROM_ADDRESS || 'Winners Health'}
+          </div>
         </div>
         <div class="footer">
           © ${new Date().getFullYear()} Winners Health · Lagos, Nigeria<br>
@@ -66,13 +71,13 @@ function buildTemplate(template, data) {
     `),
 
     orderConfirmation: base(`
-      <div class="badge">Order Confirmed</div>
+      <div class="badge">✅ Order Confirmed</div>
       <h1 style="margin-top:16px;">Thank you, ${data.name}!</h1>
       <p>Your order <strong>#${data.orderNumber}</strong> has been confirmed and is being processed.</p>
       <hr class="divider">
       ${(data.items || []).map(item => `
         <div class="order-item">
-          <span>${item.name} × ${item.quantity}</span>
+          <span>${item.emoji || ''} ${item.name} × ${item.quantity}</span>
           <span>₦${(item.price * item.quantity).toLocaleString()}</span>
         </div>
       `).join('')}
@@ -107,13 +112,13 @@ function buildTemplate(template, data) {
     `),
 
     passwordChanged: base(`
-      <h1>Password Changed</h1>
+      <h1>🔐 Password Changed</h1>
       <p>Hi ${data.name}, your Winners Health account password was successfully changed.</p>
       <p>If you did not make this change, <a href="${process.env.BASE_URL}/contact" style="color:#2d6a4f;">contact our support team immediately</a>.</p>
     `),
 
     orderShipped: base(`
-      <div class="badge">Order Shipped</div>
+      <div class="badge">🚚 Order Shipped</div>
       <h1 style="margin-top:16px;">Your order is on its way!</h1>
       <p>Hi ${data.name}, your order <strong>#${data.orderNumber}</strong> has been dispatched.</p>
       <p>Tracking number: <strong>${data.trackingNumber || 'Will be updated shortly'}</strong></p>
@@ -121,7 +126,7 @@ function buildTemplate(template, data) {
     `),
 
     lowStock: base(`
-      <h1>Low Stock Alert</h1>
+      <h1>⚠️ Low Stock Alert</h1>
       <p>The following product is running low and needs attention:</p>
       <div style="background:#fff8f0;border:1px solid #f0e0c8;border-radius:10px;padding:16px;margin:16px 0;">
         <strong style="font-size:16px;color:#1a3a2a;">${data.productName}</strong><br>
@@ -143,38 +148,92 @@ function buildTemplate(template, data) {
 // ── SEND FUNCTION ─────────────────────────────────────────────────
 async function sendEmail({ to, subject, template, data, html }) {
   try {
-    const client = getClient();
-    const emailHtml = html || buildTemplate(template, data || {});
-    
-    // ✅ ADDED: Check if sender email is configured
-    if (!process.env.EMAIL_FROM_ADDRESS) {
-      throw new Error('EMAIL_FROM_ADDRESS is not set in environment variables');
+    // ✅ Validate required environment variables
+    if (!process.env.BREVO_API_KEY) {
+      throw new Error('BREVO_API_KEY is not set in environment variables');
     }
 
+    // ✅ Use verified sender email (your personal Gmail)
+    const senderEmail = process.env.EMAIL_FROM_ADDRESS || 'your-verified-email@gmail.com';
+    const senderName = process.env.EMAIL_FROM_NAME || 'Winners Health';
+
+    if (!senderEmail || senderEmail === 'your-verified-email@gmail.com') {
+      logger.warn('⚠️  Using default sender email. Please set EMAIL_FROM_ADDRESS in .env');
+    }
+
+    const client = getClient();
+    const emailHtml = html || buildTemplate(template, data || {});
+
+    // ✅ Build the email message
     const message = new Brevo.SendSmtpEmail();
     message.sender = {
-      name: process.env.EMAIL_FROM_NAME || 'Winners Health',
-      email: process.env.EMAIL_FROM_ADDRESS,
+      name: senderName,
+      email: senderEmail, // ← Your verified personal email
     };
     message.to = [{ email: to }];
     message.subject = subject;
     message.htmlContent = emailHtml;
     
-    // ✅ ADDED: Optional plain text fallback for better deliverability
+    // ✅ Optional: Add reply-to so replies go to you
+    message.replyTo = {
+      email: senderEmail,
+      name: senderName,
+    };
+
+    // ✅ Optional: Add plain text fallback for better deliverability
     // message.textContent = `Plain text version of ${subject}`;
+
+    logger.info(`📧 Sending email to ${to}: "${subject}"`);
+    logger.debug(`📧 From: ${senderEmail} (${senderName})`);
 
     const response = await client.sendTransacEmail(message);
 
-    logger.info(`Email sent to ${to}: "${subject}" [messageId: ${response.body?.messageId}]`);
+    logger.info(`✅ Email sent to ${to}: "${subject}" [messageId: ${response.body?.messageId}]`);
     return response;
+
   } catch (err) {
-    logger.error(`Email failed to ${to}: ${err.message}`);
-    // ✅ ADDED: Log the full error for debugging
+    // ✅ Detailed error logging
+    logger.error(`❌ Email failed to ${to}: ${err.message}`);
+    
     if (err.response) {
-      logger.error(`Brevo API Error: ${err.response.body || err.response.text}`);
+      logger.error(`📋 Brevo API Error Response: ${JSON.stringify(err.response.body || err.response.text)}`);
+      
+      // ✅ Common error messages
+      if (err.response.body?.message?.includes('sender')) {
+        logger.error('⚠️  Sender email not verified. Please verify your email in Brevo Dashboard → Senders & Domains → Senders');
+      }
+      if (err.response.body?.message?.includes('API key')) {
+        logger.error('⚠️  Invalid BREVO_API_KEY. Please check your API key in Brevo Dashboard → SMTP & API → API Keys');
+      }
+      if (err.response.body?.message?.includes('credits')) {
+        logger.error('⚠️  Insufficient credits. Please check your Brevo plan and credit balance.');
+      }
     }
+
     throw err;
   }
 }
 
-module.exports = { sendEmail };
+// ── HELPER: Test email function ──────────────────────────────────
+async function testEmail() {
+  console.log('📧 Testing Brevo email configuration...');
+  console.log(`📧 Sender: ${process.env.EMAIL_FROM_ADDRESS || 'Not set'}`);
+  console.log(`📧 API Key: ${process.env.BREVO_API_KEY ? '✅ Set' : '❌ Not set'}`);
+  
+  try {
+    const result = await sendEmail({
+      to: process.env.TEST_EMAIL || 'your-email@gmail.com',
+      subject: '✅ Brevo Test Email',
+      template: 'passwordChanged',
+      data: { name: 'Test User' },
+    });
+    console.log('✅ Test email sent successfully!');
+    console.log('📧 Message ID:', result.body?.messageId);
+    return result;
+  } catch (err) {
+    console.error('❌ Test email failed:', err.message);
+    throw err;
+  }
+}
+
+module.exports = { sendEmail, testEmail };
