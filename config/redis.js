@@ -5,7 +5,7 @@ const Redis = require('ioredis');
 const logger = require('../utils/logger');
 
 // ─────────────────────────────────────────────
-// IN-MEMORY FALLBACK CACHE
+// IN-MEMORY FALLBACK CACHE WITH LOGGING
 // ─────────────────────────────────────────────
 class MemoryFallbackCache {
   constructor(options = {}) {
@@ -17,30 +17,41 @@ class MemoryFallbackCache {
     this.evictions = 0;
     this.enabled = true;
     this.redisAvailable = false;
+    this.operationCount = 0;
     logger.info('📦 In-memory fallback cache initialized');
+    logger.info(`📦 Cache settings: TTL=${this.defaultTTL}s, Max size=${this.maxSize} items`);
   }
 
   get(key) {
-    if (!this.enabled) return null;
+    if (!this.enabled) {
+      logger.debug(`📦 Memory cache DISABLED for GET: ${key}`);
+      return null;
+    }
     
     const item = this.cache.get(key);
     if (!item) {
       this.misses++;
+      logger.debug(`📦 Memory cache MISS: ${key} (misses: ${this.misses})`);
       return null;
     }
 
     if (Date.now() > item.expiresAt) {
       this.cache.delete(key);
       this.misses++;
+      logger.debug(`📦 Memory cache EXPIRED: ${key} (deleted)`);
       return null;
     }
 
     this.hits++;
+    logger.debug(`📦 Memory cache HIT: ${key} (hits: ${this.hits}, hit rate: ${this.getHitRate()})`);
     return item.value;
   }
 
   set(key, value, ttl = this.defaultTTL) {
-    if (!this.enabled) return false;
+    if (!this.enabled) {
+      logger.debug(`📦 Memory cache DISABLED for SET: ${key}`);
+      return false;
+    }
 
     if (this.cache.size >= this.maxSize) {
       this.evictOldest();
@@ -51,18 +62,28 @@ class MemoryFallbackCache {
       expiresAt: Date.now() + (ttl * 1000),
       createdAt: Date.now(),
     });
+    
+    this.operationCount++;
+    logger.debug(`📦 Memory cache SET: ${key} (TTL: ${ttl}s, size: ${this.cache.size}/${this.maxSize})`);
     return true;
   }
 
   delete(key) {
-    return this.cache.delete(key);
+    const deleted = this.cache.delete(key);
+    if (deleted) {
+      logger.debug(`📦 Memory cache DELETE: ${key}`);
+    }
+    return deleted;
   }
 
   clear() {
+    const size = this.cache.size;
     this.cache.clear();
     this.hits = 0;
     this.misses = 0;
     this.evictions = 0;
+    this.operationCount = 0;
+    logger.info(`📦 Memory cache CLEARED (removed ${size} items)`);
   }
 
   has(key) {
@@ -70,23 +91,31 @@ class MemoryFallbackCache {
     if (!item) return false;
     if (Date.now() > item.expiresAt) {
       this.cache.delete(key);
+      logger.debug(`📦 Memory cache HAS: ${key} - expired (removed)`);
       return false;
     }
+    logger.debug(`📦 Memory cache HAS: ${key} - true`);
     return true;
   }
 
+  getHitRate() {
+    const total = this.hits + this.misses;
+    return total > 0 ? ((this.hits / total) * 100).toFixed(2) + '%' : '0%';
+  }
+
   getStats() {
+    const total = this.hits + this.misses;
     return {
       size: this.cache.size,
       maxSize: this.maxSize,
       hits: this.hits,
       misses: this.misses,
       evictions: this.evictions,
-      hitRate: this.hits + this.misses > 0 
-        ? (this.hits / (this.hits + this.misses) * 100).toFixed(2) + '%'
-        : '0%',
+      operations: this.operationCount,
+      hitRate: this.getHitRate(),
       redisAvailable: this.redisAvailable,
       mode: this.redisAvailable ? 'redis' : 'memory',
+      utilization: ((this.cache.size / this.maxSize) * 100).toFixed(1) + '%',
     };
   }
 
@@ -95,30 +124,45 @@ class MemoryFallbackCache {
     if (oldestKey) {
       this.cache.delete(oldestKey);
       this.evictions++;
+      logger.debug(`📦 Memory cache EVICTED: ${oldestKey} (evictions: ${this.evictions})`);
     }
   }
 
   async getOrSet(key, fetchFn, ttl = this.defaultTTL) {
+    logger.debug(`📦 Memory cache getOrSet: ${key} - checking cache...`);
     const cached = this.get(key);
-    if (cached !== null) return cached;
+    if (cached !== null) {
+      logger.debug(`📦 Memory cache getOrSet: ${key} - cache HIT ✅`);
+      return cached;
+    }
 
+    logger.debug(`📦 Memory cache getOrSet: ${key} - cache MISS ❌, fetching fresh...`);
     try {
       const fresh = await fetchFn();
       if (fresh !== null && fresh !== undefined) {
         this.set(key, fresh, ttl);
+        logger.debug(`📦 Memory cache getOrSet: ${key} - stored in cache ✅`);
+      } else {
+        logger.warn(`📦 Memory cache getOrSet: ${key} - fetched value is null/undefined`);
       }
       return fresh;
     } catch (err) {
-      logger.error(`MemoryCache: getOrSet failed for ${key}: ${err.message}`);
+      logger.error(`📦 Memory cache getOrSet: ${key} - fetch failed: ${err.message}`);
       throw err;
     }
   }
 
   mget(keys) {
-    return keys.map(key => this.get(key));
+    logger.debug(`📦 Memory cache MGET: ${keys.length} keys`);
+    const results = keys.map(key => this.get(key));
+    const hitCount = results.filter(r => r !== null).length;
+    logger.debug(`📦 Memory cache MGET: ${hitCount}/${keys.length} hits`);
+    return results;
   }
 
   mset(items, ttl = this.defaultTTL) {
+    const count = Object.keys(items).length;
+    logger.debug(`📦 Memory cache MSET: ${count} items`);
     for (const [key, value] of Object.entries(items)) {
       this.set(key, value, ttl);
     }
@@ -126,8 +170,9 @@ class MemoryFallbackCache {
   }
 
   mdelete(keys) {
+    logger.debug(`📦 Memory cache MDELETE: ${keys.length} keys`);
     for (const key of keys) {
-      this.cache.delete(key);
+      this.delete(key);
     }
     return true;
   }
@@ -142,7 +187,7 @@ class MemoryFallbackCache {
 // ─────────────────────────────────────────────
 let cacheWrapper = null;
 let bullWrapper = null;
-let redisReady = false; // ← Renamed from isRedisReady
+let redisReady = false;
 let memoryFallback = null;
 
 // ─────────────────────────────────────────────
@@ -230,6 +275,7 @@ function getMemoryFallback() {
       defaultTTL: parseInt(process.env.CACHE_TTL) || 300,
       maxSize: parseInt(process.env.CACHE_MAX_SIZE) || 1000,
     });
+    logger.info('📦 Memory fallback cache instance created');
   }
   return memoryFallback;
 }
@@ -245,7 +291,7 @@ function getRedisClient(label, extraOptions = {}) {
   const config = getRedisConfig();
 
   if (!config) {
-    logger.warn(`Redis [${label}]: REDIS_URL not set — using memory fallback`);
+    logger.warn(`⚠️ Redis [${label}]: REDIS_URL not set — using memory fallback`);
     
     const fallbackWrapper = {
       client: null,
@@ -258,6 +304,7 @@ function getRedisClient(label, extraOptions = {}) {
     if (label === 'Cache') cacheWrapper = fallbackWrapper;
     if (label === 'BullMQ') bullWrapper = fallbackWrapper;
     
+    logger.info(`📦 Redis [${label}]: Memory fallback active`);
     return fallbackWrapper;
   }
 
@@ -294,9 +341,10 @@ function getRedisClient(label, extraOptions = {}) {
 
   client.on('ready', () => {
     ready = true;
-    redisReady = true; // ← Updated
+    redisReady = true;
     if (memoryFallback) {
       memoryFallback.redisAvailable = true;
+      logger.info(`✅ Redis [${label}] ready — memory fallback will not be used`);
     }
     logger.info(`✅ Redis [${label}] ready for commands`);
   });
@@ -313,13 +361,13 @@ function getRedisClient(label, extraOptions = {}) {
     }
     
     if (err.code === 'ECONNREFUSED') {
-      logger.error(`Redis [${label}]: Connection refused. Is Redis running?`);
+      logger.error(`❌ Redis [${label}]: Connection refused. Is Redis running?`);
     } else if (err.code === 'ENOTFOUND') {
-      logger.error(`Redis [${label}]: Host not found. Check REDIS_URL`);
+      logger.error(`❌ Redis [${label}]: Host not found. Check REDIS_URL`);
     } else if (err.code === 'ETIMEDOUT') {
-      logger.error(`Redis [${label}]: Connection timeout`);
+      logger.error(`❌ Redis [${label}]: Connection timeout`);
     } else {
-      logger.error(`Redis [${label}] error: ${err.message}`);
+      logger.error(`❌ Redis [${label}] error: ${err.message}`);
     }
   });
 
@@ -329,7 +377,7 @@ function getRedisClient(label, extraOptions = {}) {
     if (memoryFallback) {
       memoryFallback.redisAvailable = false;
     }
-    logger.warn(`Redis [${label}] connection closed — using memory fallback`);
+    logger.warn(`⚠️ Redis [${label}] connection closed — using memory fallback`);
   });
 
   client.on('end', () => {
@@ -338,11 +386,11 @@ function getRedisClient(label, extraOptions = {}) {
     if (memoryFallback) {
       memoryFallback.redisAvailable = false;
     }
-    logger.error(`Redis [${label}] disconnected (max retries hit) — using memory fallback`);
+    logger.error(`❌ Redis [${label}] disconnected (max retries hit) — using memory fallback`);
   });
 
   client.on('reconnecting', (delay) => {
-    logger.warn(`Redis [${label}] reconnecting in ${delay}ms`);
+    logger.warn(`🔄 Redis [${label}] reconnecting in ${delay}ms`);
   });
 
   return wrapper;
@@ -375,7 +423,6 @@ function getBullMQConnection() {
   return bullmq?.client || null;
 }
 
-// ─── FIXED: Only ONE isRedisReady function ───
 function isRedisReady() {
   return cache?.isReady() || false;
 }
@@ -387,6 +434,8 @@ function isUsingMemoryFallback() {
 function getRedisStatus() {
   const memFallback = getMemoryFallback();
   const stats = memFallback.getStats();
+  
+  logger.debug(`📊 Redis status: ${redisReady ? 'redis' : 'memory'} mode`);
   
   return {
     cache: {
@@ -406,33 +455,44 @@ function getRedisStatus() {
 }
 
 // ─────────────────────────────────────────────
-// CACHE HELPERS WITH FALLBACK
+// CACHE HELPERS WITH FALLBACK AND LOGGING
 // ─────────────────────────────────────────────
 async function cacheGet(key) {
+  logger.debug(`🔍 cacheGet: ${key}`);
+  
   // Try Redis first
   if (cache && cache.isReady()) {
     try {
       const val = await cache.client.get(key);
       if (val !== null) {
         try {
-          return JSON.parse(val);
+          const parsed = JSON.parse(val);
+          logger.debug(`✅ cacheGet: ${key} - Redis HIT`);
+          return parsed;
         } catch (parseErr) {
-          logger.warn(`cacheGet [${key}]: Failed to parse JSON: ${parseErr.message}`);
+          logger.warn(`⚠️ cacheGet [${key}]: Failed to parse JSON: ${parseErr.message}`);
           return null;
         }
       }
+      logger.debug(`🔍 cacheGet: ${key} - Redis MISS`);
     } catch (err) {
-      logger.warn(`cacheGet [${key}]: Redis error: ${err.message} — using memory fallback`);
-      // Fall through to memory cache
+      logger.warn(`⚠️ cacheGet [${key}]: Redis error: ${err.message} — using memory fallback`);
     }
   }
 
   // Fallback to memory cache
   const memFallback = getMemoryFallback();
-  return memFallback.get(key);
+  const result = memFallback.get(key);
+  if (result !== null) {
+    logger.debug(`✅ cacheGet: ${key} - Memory HIT`);
+  } else {
+    logger.debug(`🔍 cacheGet: ${key} - Memory MISS`);
+  }
+  return result;
 }
 
 async function cacheSet(key, value, ttl = 300) {
+  logger.debug(`💾 cacheSet: ${key} (TTL: ${ttl}s)`);
   let redisSuccess = false;
 
   // Try Redis first
@@ -441,20 +501,22 @@ async function cacheSet(key, value, ttl = 300) {
       const serialized = JSON.stringify(value);
       await cache.client.set(key, serialized, 'EX', ttl);
       redisSuccess = true;
+      logger.debug(`✅ cacheSet: ${key} - Redis stored`);
     } catch (err) {
-      logger.warn(`cacheSet [${key}]: Redis error: ${err.message} — using memory fallback`);
+      logger.warn(`⚠️ cacheSet [${key}]: Redis error: ${err.message} — using memory fallback`);
     }
   }
 
   // Always store in memory fallback (for consistency)
   const memFallback = getMemoryFallback();
   memFallback.set(key, value, ttl);
+  logger.debug(`✅ cacheSet: ${key} - Memory stored (Redis: ${redisSuccess ? '✅' : '❌'})`);
   
-  // Also store in Redis if it worked
   return redisSuccess;
 }
 
 async function cacheDel(...keys) {
+  logger.debug(`🗑️ cacheDel: ${keys.length} keys: ${keys.join(', ')}`);
   let redisSuccess = false;
 
   // Try Redis first
@@ -462,26 +524,33 @@ async function cacheDel(...keys) {
     try {
       await cache.client.del(...keys);
       redisSuccess = true;
+      logger.debug(`✅ cacheDel: Redis deleted ${keys.length} keys`);
     } catch (err) {
-      logger.warn(`cacheDel: Redis error: ${err.message} — using memory fallback`);
+      logger.warn(`⚠️ cacheDel: Redis error: ${err.message} — using memory fallback`);
     }
   }
 
   // Always delete from memory fallback
   const memFallback = getMemoryFallback();
   memFallback.mdelete(keys);
+  logger.debug(`✅ cacheDel: Memory deleted ${keys.length} keys`);
   
   return redisSuccess;
 }
 
 async function cacheGetOrSet(key, fetchFn, ttl = 300) {
+  logger.debug(`🔄 cacheGetOrSet: ${key} (TTL: ${ttl}s)`);
+  
   // Try Redis first
   if (cache && cache.isReady()) {
     try {
       const cached = await cacheGet(key);
-      if (cached !== null) return cached;
+      if (cached !== null) {
+        logger.debug(`✅ cacheGetOrSet: ${key} - Redis HIT ✅`);
+        return cached;
+      }
     } catch (err) {
-      logger.warn(`cacheGetOrSet [${key}]: Redis error: ${err.message} — using memory fallback`);
+      logger.warn(`⚠️ cacheGetOrSet [${key}]: Redis error: ${err.message} — using memory fallback`);
     }
   }
 
@@ -489,10 +558,12 @@ async function cacheGetOrSet(key, fetchFn, ttl = 300) {
   const memFallback = getMemoryFallback();
   const memCached = memFallback.get(key);
   if (memCached !== null) {
+    logger.debug(`✅ cacheGetOrSet: ${key} - Memory HIT ✅`);
     // If we have it in memory, also try to restore to Redis
     if (cache && cache.isReady()) {
       try {
         await cacheSet(key, memCached, ttl);
+        logger.debug(`✅ cacheGetOrSet: ${key} - Restored to Redis`);
       } catch (err) {
         // Ignore Redis errors, memory is working
       }
@@ -501,15 +572,19 @@ async function cacheGetOrSet(key, fetchFn, ttl = 300) {
   }
 
   // Fetch fresh data
+  logger.debug(`🔄 cacheGetOrSet: ${key} - Cache MISS ❌, fetching fresh...`);
   try {
     const fresh = await fetchFn();
     if (fresh !== null && fresh !== undefined) {
       // Store in both Redis and memory
       await cacheSet(key, fresh, ttl);
+      logger.debug(`✅ cacheGetOrSet: ${key} - Stored fresh data (size: ${JSON.stringify(fresh).length} bytes)`);
+    } else {
+      logger.warn(`⚠️ cacheGetOrSet: ${key} - fetchFn returned null/undefined`);
     }
     return fresh;
   } catch (err) {
-    logger.error(`cacheGetOrSet [${key}]: Fetch failed: ${err.message}`);
+    logger.error(`❌ cacheGetOrSet [${key}]: Fetch failed: ${err.message}`);
     throw err;
   }
 }
@@ -518,9 +593,11 @@ async function cacheGetOrSet(key, fetchFn, ttl = 300) {
 // CONNECTION TEST
 // ─────────────────────────────────────────────
 async function testRedisConnection() {
+  logger.info('🔍 Testing Redis connection...');
   const config = getRedisConfig();
   
   if (!config) {
+    logger.warn('⚠️ REDIS_URL not configured — using memory fallback');
     return {
       success: false,
       error: 'REDIS_URL not configured',
@@ -542,6 +619,8 @@ async function testRedisConnection() {
   });
 
   try {
+    logger.info(`🔍 Connecting to Redis at ${config.url.replace(/:.+@/, ':****@')}`);
+    
     const result = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         testClient.disconnect();
@@ -550,11 +629,13 @@ async function testRedisConnection() {
 
       testClient.on('connect', () => {
         clearTimeout(timeout);
+        logger.info('✅ Redis: Connected');
         resolve('connected');
       });
 
       testClient.on('error', (err) => {
         clearTimeout(timeout);
+        logger.error(`❌ Redis: Connection error: ${err.message}`);
         reject(err);
       });
 
@@ -562,6 +643,7 @@ async function testRedisConnection() {
         try {
           const pong = await testClient.ping();
           clearTimeout(timeout);
+          logger.info(`✅ Redis: Ping successful (${pong})`);
           resolve(pong);
         } catch (err) {
           clearTimeout(timeout);
@@ -571,6 +653,7 @@ async function testRedisConnection() {
     });
 
     await testClient.quit();
+    logger.info('✅ Redis connection test passed');
 
     return {
       success: result === 'PONG',
@@ -580,6 +663,8 @@ async function testRedisConnection() {
     };
   } catch (err) {
     await testClient.quit().catch(() => {});
+    logger.error(`❌ Redis connection test failed: ${err.message}`);
+    logger.info('📦 Falling back to memory cache');
     return {
       success: false,
       error: err.message,
@@ -597,6 +682,8 @@ async function redisHealthCheck() {
   const memFallback = getMemoryFallback();
   const stats = memFallback.getStats();
   
+  logger.debug(`📊 Redis health check: ${redisReady ? 'redis' : 'memory'} mode`);
+  
   const result = {
     configured: isRedisConfigured(),
     mode: redisReady ? 'redis' : 'memory',
@@ -609,12 +696,14 @@ async function redisHealthCheck() {
       status: 'disconnected',
     },
     memoryFallback: stats,
+    timestamp: new Date().toISOString(),
   };
 
   if (!isRedisConfigured()) {
     result.cache.status = 'not_configured';
     result.bullmq.status = 'not_configured';
     result.mode = 'memory';
+    logger.debug('📊 Redis health: not configured');
     return result;
   }
 
@@ -623,11 +712,14 @@ async function redisHealthCheck() {
       await cache.client.ping();
       result.cache.connected = true;
       result.cache.status = 'connected';
+      logger.debug('📊 Redis health: cache connected');
     } else {
       result.cache.status = cache?.status || 'fallback_mode';
+      logger.debug(`📊 Redis health: cache ${result.cache.status}`);
     }
   } catch (err) {
     result.cache.status = `error: ${err.message}`;
+    logger.warn(`📊 Redis health: cache error - ${err.message}`);
   }
 
   try {
@@ -635,11 +727,14 @@ async function redisHealthCheck() {
       await bullmq.client.ping();
       result.bullmq.connected = true;
       result.bullmq.status = 'connected';
+      logger.debug('📊 Redis health: bullmq connected');
     } else {
       result.bullmq.status = bullmq?.status || 'fallback_mode';
+      logger.debug(`📊 Redis health: bullmq ${result.bullmq.status}`);
     }
   } catch (err) {
     result.bullmq.status = `error: ${err.message}`;
+    logger.warn(`📊 Redis health: bullmq error - ${err.message}`);
   }
 
   return result;
@@ -650,18 +745,24 @@ async function redisHealthCheck() {
 // ─────────────────────────────────────────────
 function getCacheStats() {
   const memFallback = getMemoryFallback();
-  return memFallback.getStats();
+  const stats = memFallback.getStats();
+  logger.debug(`📊 Cache stats: ${stats.size}/${stats.maxSize} items, ${stats.hitRate} hit rate`);
+  return stats;
 }
 
 async function cacheClear() {
+  logger.info('🗑️ Clearing all cache...');
   const memFallback = getMemoryFallback();
+  const size = memFallback.cache.size;
   memFallback.clear();
+  logger.info(`✅ Memory cache cleared (${size} items)`);
   
   if (cache && cache.isReady()) {
     try {
       await cache.client.flushdb();
+      logger.info('✅ Redis cache cleared');
     } catch (err) {
-      logger.warn('cacheClear: Redis flush failed — memory cache cleared');
+      logger.warn('⚠️ cacheClear: Redis flush failed — memory cache cleared');
     }
   }
 }
@@ -670,6 +771,7 @@ async function cacheClear() {
 // CLEANUP
 // ─────────────────────────────────────────────
 async function closeRedis() {
+  logger.info('🔌 Closing Redis connections...');
   const tasks = [];
 
   if (cache?.client) {
@@ -704,6 +806,8 @@ async function closeRedis() {
   if (memoryFallback) {
     memoryFallback.redisAvailable = false;
   }
+  
+  logger.info('📦 Memory fallback disabled');
 }
 
 // ─────────────────────────────────────────────
@@ -718,7 +822,7 @@ module.exports = {
   getRedisStatus,
   
   // State checks
-  isRedisReady, // ← Now only ONE function
+  isRedisReady,
   isRedisConfigured,
   isUsingMemoryFallback,
   

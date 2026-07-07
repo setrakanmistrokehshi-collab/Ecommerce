@@ -229,24 +229,37 @@ function gracefulShutdown(signal) {
 // ── BOOT ──────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
+
 connectDB().then(async () => {
   // ✅ Test Redis connection on startup
   try {
     const redisResult = await testRedisConnection();
     if (redisResult.success) {
       logger.info('✅ Redis connected');
+      
+      // ✅ Wait a moment for Redis to fully initialize
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // ✅ Check if main Redis client is ready
+      const { isRedisReady } = require('./config/redis');
+      if (isRedisReady()) {
+        logger.info('✅ Redis features are enabled');
+      } else {
+        logger.warn('⚠️ Redis features may be delayed - will retry');
+      }
     } else {
       logger.warn('⚠️ Redis not connected:', redisResult.error);
       logger.warn('⚠️ Redis features will be disabled');
     }
   } catch (err) {
     logger.warn('⚠️ Redis initialization failed:', err.message);
+    logger.warn('⚠️ Redis features will be disabled');
   }
 
   server = app.listen(PORT, () => {
     logger.info(`🚀 Server running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
-
+  
   server.timeout          = 30_000;
   server.keepAliveTimeout = 65_000;
   server.headersTimeout   = 66_000;
