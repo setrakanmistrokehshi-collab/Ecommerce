@@ -23,6 +23,10 @@ const path          = require('path');
 const hpp           = require('hpp');
 const mongoSanitize = require('express-mongo-sanitize');
 
+// ── IMPORT REDIS ──────────────────────────────────────────────────
+const { testRedisConnection, closeRedis } = require('./config/redis');
+const redisHealthCheck = require('./config/redis');
+
 const authRoutes    = require('./routes/auth');
 const productRoutes = require('./routes/products');
 const orderRoutes   = require('./routes/orders');
@@ -118,11 +122,13 @@ app.get('/', (req, res) => {
     status: 'running',
     endpoints: {
       health: '/health',
-      // Add other endpoints here
+      ready: '/ready',
+      redis: '/health/redis',
     },
     timestamp: new Date().toISOString(),
   });
 });
+
 app.get('/health', (req, res) => res.json({
   status:    'ok',
   timestamp: new Date(),
@@ -139,6 +145,31 @@ app.get('/ready', async (req, res) => {
   }
 });
 
+// ✅ ADD REDIS HEALTH CHECK ENDPOINT
+app.get('/health/redis', async (req, res) => {
+  try {
+    const result = await testRedisConnection();
+    if (result.success) {
+      res.json({
+        status: 'ok',
+        redis: 'connected',
+        message: result.message,
+      });
+    } else {
+      res.status(503).json({
+        status: 'error',
+        redis: 'disconnected',
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    res.status(503).json({
+      status: 'error',
+      redis: 'disconnected',
+      error: err.message,
+    });
+  }
+});
 
 // ── API ROUTES ────────────────────────────────────────────────────
 
@@ -157,9 +188,6 @@ app.use('/api', (req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.originalUrl} not found` });
 });
 
-
-  
-
 // ── ERROR HANDLER (must be last) ──────────────────────────────────
 app.use(errorHandler);
 
@@ -169,19 +197,19 @@ async function connectDB() {
     await mongoose.connect(process.env.MONGODB_URI);
     logger.info('✅ MongoDB connected');
   } catch (err) {
-    // Log full error object — err.message alone can be empty for some mongoose errors
     logger.error('❌ MongoDB connection failed:', err);
     process.exit(1);
   }
 }
 
 // ── GRACEFUL SHUTDOWN ─────────────────────────────────────────────
-// FIX: server may be undefined if shutdown triggered before DB connects
 let server;
 
 function gracefulShutdown(signal) {
   logger.info(`${signal} received — shutting down gracefully`);
   const cleanup = async () => {
+    // ✅ Close Redis connection
+    await closeRedis();
     await mongoose.connection.close();
     logger.info('DB connection closed');
     process.exit(0);
@@ -201,7 +229,20 @@ function gracefulShutdown(signal) {
 // ── BOOT ──────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
-connectDB().then(() => {
+connectDB().then(async () => {
+  // ✅ Test Redis connection on startup
+  try {
+    const redisResult = await testRedisConnection();
+    if (redisResult.success) {
+      logger.info('✅ Redis connected');
+    } else {
+      logger.warn('⚠️ Redis not connected:', redisResult.error);
+      logger.warn('⚠️ Redis features will be disabled');
+    }
+  } catch (err) {
+    logger.warn('⚠️ Redis initialization failed:', err.message);
+  }
+
   server = app.listen(PORT, () => {
     logger.info(`🚀 Server running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
@@ -213,7 +254,6 @@ connectDB().then(() => {
   process.on('SIGTERM',             () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT',              () => gracefulShutdown('SIGINT'));
 
-  // FIX: unhandledRejection = unknown state → exit immediately, don't drain
   process.on('unhandledRejection', (reason) => {
     logger.error('Unhandled rejection:', reason);
     process.exit(1);
