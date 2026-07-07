@@ -23,3 +23,7 @@
 {"level":"warn","message":"⚠️ Redis not connected:","timestamp":"2026-07-07 15:37:37"}
 {"level":"warn","message":"⚠️ Redis features will be disabled","timestamp":"2026-07-07 15:37:37"}
 {"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-07-07 15:37:37"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-07-07 15:42:49"}
+{"level":"warn","message":"⚠️ Redis not connected:","timestamp":"2026-07-07 15:42:49"}
+{"level":"warn","message":"⚠️ Redis features will be disabled","timestamp":"2026-07-07 15:42:49"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-07-07 15:42:49"}
