@@ -84,7 +84,7 @@ app.use(compression());
 app.use(limitQueryString(2048));
 
 // ── BODY PARSERS (hpp must come AFTER these) ──────────────────────
-app.use('/webhooks',      express.raw({ type: 'application/json', limit: '100kb' }));
+app.use('/webhooks/nomba',      express.raw({ type: 'application/json', limit: '150kb' }));
 app.use('/api/v1/admin',  express.json({ limit: '50kb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
@@ -107,7 +107,7 @@ app.use('/api/v1/auth/admin-login',          adminLoginLimiter);
 app.use('/api/v1/auth/register',            authLimiter);
 app.use('/api/v1/auth/forgot-password',     authLimiter);
 app.use('/api/v1/auth/reset-password',      authLimiter);
-app.use('/webhooks',                        webhookLimiter);
+app.use('/webhooks/nomba',                        webhookLimiter);
 
 // ── HEALTH CHECKS ─────────────────────────────────────────────────
 
@@ -150,7 +150,7 @@ app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/categories', categoryRoutes);
 app.use('/api/v1/admin',    adminRoutes);
 app.use('/api/v1/admin/users',    adminRoutes);
-app.use('/api/v1/webhooks',        webhookRoutes);
+app.use('/api/v1/webhooks/nomba',        webhookRoutes);
 
 // ── API 404 ───────────────────────────────────────────────────────
 app.use('/api', (req, res) => {

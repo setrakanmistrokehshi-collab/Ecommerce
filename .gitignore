@@ -2,3 +2,4 @@ node_modules
 .env
 seed.js
 combined.log
+logs

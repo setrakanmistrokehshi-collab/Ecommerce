@@ -19,7 +19,7 @@ function getClient() {
 // ── EMAIL TEMPLATES ───────────────────────────────────────────────
 function buildTemplate(template, data) {
   const base = (content) => `
-    <!DOCTYPE html>
+    
     <html lang="en">
     <head>
       <meta charset="UTF-8">
@@ -277,7 +277,8 @@ async function sendEmail({ to, subject, template, data, html }) {
     return response;
 
   } catch (err) {
-    logger.error(`❌ Email failed to ${to}: ${err.message}`);
+    console.error(`❌ Email failed to ${to}: ${err.message}`);
+    //logger.error(`❌ Email failed to ${to}: ${err.message}`);
     
     if (err.response) {
       logger.error(`📋 Brevo API Error Response: ${JSON.stringify(err.response.body || err.response.text)}`);
