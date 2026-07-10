@@ -42,6 +42,7 @@ const {
   globalLimiter,
   authLimiter,
   webhookLimiter,
+  adminLoginLimiter
 } = require("./middleware/rateLimiter");
 const logger = require("./utils/logger");
 
@@ -103,7 +104,7 @@ app.use(compression());
 app.use(limitQueryString(2048));
 
 // ── BODY PARSERS (hpp must come AFTER these) ──────────────────────
-app.use("/webhooks", express.raw({ type: "application/json", limit: "100kb" }));
+app.use("/webhooks", express.raw({ type: "application/json", limit: "150kb" }));
 app.use("/api/v1/admin", express.json({ limit: "50kb" }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
@@ -148,7 +149,47 @@ app.get("/ready", async (req, res) => {
     res.status(503).json({ ready: false, error: "Database not connected" });
   }
 });
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Welcome to the API',
+    version: '2.0.0',
+    status: 'running',
+    endpoints: {
+      health: '/health',
+      ready: '/ready',
+      redis: '/health/redis',
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
 
+
+
+// ✅ ADD REDIS HEALTH CHECK ENDPOINT
+app.get('/health/redis', async (req, res) => {
+  try {
+    const result = await testRedisConnection();
+    if (result.success) {
+      res.json({
+        status: 'ok',
+        redis: 'connected',
+        message: result.message,
+      });
+    } else {
+      res.status(503).json({
+        status: 'error',
+        redis: 'disconnected',
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    res.status(503).json({
+      status: 'error',
+      redis: 'disconnected',
+      error: err.message,
+    });
+  }
+});
 // ── API ROUTES ────────────────────────────────────────────────────
 
 app.use("/api/v1/auth", authRoutes);
