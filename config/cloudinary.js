@@ -1,73 +1,244 @@
 'use strict';
 
-const cloudinary        = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const multer            = require('multer');
-const { randomUUID }    = require('crypto');
-const logger            = require('../utils/logger');
+const cloudinary = require('cloudinary').v2;
+const multer = require('multer');
+const streamifier = require('streamifier');
+const { randomUUID } = require('crypto');
+const logger = require('../utils/logger');
 
-// ── CLOUDINARY INIT ───────────────────────────────────────────────
+/* -------------------------------------------------------------------------- */
+/*                                CONFIGURATION                               */
+/* -------------------------------------------------------------------------- */
+
+const isConfigured = () =>
+  Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+  );
+
+if (!isConfigured()) {
+  logger.warn('Cloudinary credentials are missing.');
+}
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure:     true,
+  secure: true,
 });
 
-// ── CONSTANTS ─────────────────────────────────────────────────────
-const ALLOWED_MIMES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
-const MAX_FILES     = 5;
+/* -------------------------------------------------------------------------- */
 
-// ── STORAGE ───────────────────────────────────────────────────────
-const storage = new CloudinaryStorage({   // ✅ constructor, not function call
-  cloudinary,
-  params: {                               // ✅ params not uploadOptions
-    folder:          'winners/products',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
-    transformation: [
-      {
-        width:        800,
-        height:       800,
-        crop:         'limit',            // ✅ valid crop mode
-        quality:      'auto',
-        fetch_format: 'auto',
-      },
-    ],
-    // ✅ public_id must be a function — called fresh on every request
-    public_id: (req, file) => `product_${randomUUID()}_${Date.now()}`,
-  },
-});
+const DEFAULT_FOLDER = 'winners/products';
 
-// ── FILE FILTER ───────────────────────────────────────────────────
+const MAX_FILE_SIZE = 5 * 1024 * 1024; //5MB
+
+const MAX_FILES = 5;
+
+const ALLOWED_MIMES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
+
+/* -------------------------------------------------------------------------- */
+/*                               MULTER CONFIG                                */
+/* -------------------------------------------------------------------------- */
+
 function fileFilter(req, file, cb) {
-  if (!ALLOWED_MIMES.includes(file.mimetype)) {
-    return cb(new Error('Only JPEG, PNG and WebP images are allowed'), false);
+  if (!ALLOWED_MIMES.has(file.mimetype)) {
+    return cb(new Error('Unsupported image type'));
   }
+
   cb(null, true);
 }
 
-// ── MULTER INSTANCE ───────────────────────────────────────────────
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter,
   limits: {
     fileSize: MAX_FILE_SIZE,
-    files:    MAX_FILES,
+    files: MAX_FILES,
   },
 });
 
-// ── DELETE FROM CLOUDINARY ────────────────────────────────────────
-// publicId = full path: "winners/products/product_xxx_123"
-async function deleteFromCloudinary(publicId) {
+const uploadSingle = upload.single('image');
+
+const uploadMultiple = upload.array('images', MAX_FILES);
+
+/* -------------------------------------------------------------------------- */
+/*                          CLOUDINARY STREAM UPLOAD                          */
+/* -------------------------------------------------------------------------- */
+
+function uploadBuffer(buffer, options = {}) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: options.folder || DEFAULT_FOLDER,
+
+        public_id:
+          options.public_id ||
+          `product_${randomUUID().replace(/-/g, '')}`,
+
+        overwrite: false,
+
+        resource_type: 'image',
+
+        quality: 'auto',
+
+        fetch_format: 'auto',
+
+        transformation: [
+          {
+            width: 1200,
+            height: 1200,
+            crop: 'limit',
+          },
+        ],
+
+        ...options,
+      },
+
+      (err, result) => {
+        if (err) return reject(err);
+
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(buffer).pipe(stream);
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+
+async function uploadToCloudinary(file, options = {}) {
+  if (!isConfigured()) {
+    throw new Error('Cloudinary is not configured.');
+  }
+
+  if (!file || !file.buffer) {
+    throw new Error('Invalid upload.');
+  }
+
   try {
-    const result = await cloudinary.uploader.destroy(publicId);
-    logger.info(`Cloudinary delete: ${publicId} → ${result.result}`);
+    const result = await uploadBuffer(file.buffer, options);
+
+    logger.info(`Uploaded ${result.public_id}`);
+
     return result;
   } catch (err) {
-    logger.error('Cloudinary delete failed:', err.message);
+    logger.error(err);
+
+    throw err;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+
+async function deleteFromCloudinary(publicId) {
+  if (!publicId) return null;
+
+  try {
+    return await cloudinary.uploader.destroy(publicId);
+  } catch (err) {
+    logger.error(err);
+
     return null;
   }
 }
 
-module.exports = { cloudinary, upload, deleteFromCloudinary, MAX_FILES };
+/* -------------------------------------------------------------------------- */
+
+async function deleteMultipleFromCloudinary(publicIds = []) {
+  if (!publicIds.length) return [];
+
+  return Promise.all(
+    publicIds.map((id) => deleteFromCloudinary(id))
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+function getOptimizedUrl(publicId, options = {}) {
+  if (!publicId) return null;
+
+  return cloudinary.url(publicId, {
+    secure: true,
+
+    width: options.width || 800,
+
+    height: options.height || 800,
+
+    crop: options.crop || 'limit',
+
+    quality: options.quality || 'auto',
+
+    fetch_format: 'auto',
+  });
+}
+
+function getThumbnailUrl(publicId) {
+  return getOptimizedUrl(publicId, {
+    width: 250,
+    height: 250,
+    crop: 'fill',
+    gravity: 'auto',
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+
+function handleMulterError(err, req, res, next) {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({
+      success: false,
+      message: err.message,
+      code: err.code,
+    });
+  }
+
+  if (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message,
+    });
+  }
+
+  next();
+}
+
+/* -------------------------------------------------------------------------- */
+
+module.exports = {
+  cloudinary,
+
+  upload,
+
+  uploadSingle,
+
+  uploadMultiple,
+
+  uploadToCloudinary,
+
+  deleteFromCloudinary,
+
+  deleteMultipleFromCloudinary,
+
+  getOptimizedUrl,
+
+  getThumbnailUrl,
+
+  handleMulterError,
+
+  isConfigured,
+
+  DEFAULT_FOLDER,
+
+  MAX_FILE_SIZE,
+
+  MAX_FILES,
+};
