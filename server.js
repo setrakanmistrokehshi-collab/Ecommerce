@@ -31,6 +31,7 @@ const webhookRoutes = require("./routes/webhooks");
 const userRoutes = require("./routes/users");
 const adminRoutes = require("./routes/admin");
 const categoryRoutes = require("./routes/categories");
+const settingRoutes = require("./routes/admin")
 
 const { errorHandler } = require("./middleware/errorHandler");
 const {
@@ -157,7 +158,7 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       ready: '/ready',
-      redis: '/health/redis',
+      //redis: '/health/redis',
     },
     timestamp: new Date().toISOString(),
   });
@@ -198,6 +199,7 @@ app.use("/api/v1/products", productRoutes);
 app.use("/api/v1/orders", orderRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/settings", settingRoutes);
 app.use("/api/v1/webhooks", webhookRoutes);
 app.use("/api/v1/categories", categoryRoutes);
 // ── API 404 ───────────────────────────────────────────────────────
