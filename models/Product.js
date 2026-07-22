@@ -123,7 +123,7 @@ productSchema.virtual('availableStock').get(function () {
 });
 
 // ── PRE-VALIDATE: Clean up data ──────────────────────────────────
-productSchema.pre('validate', function(next) {
+productSchema.pre('validate', function() {
   // Trim string fields
   if (this.name) this.name = this.name.trim();
   if (this.shortDescription) this.shortDescription = this.shortDescription.trim();
@@ -155,12 +155,11 @@ productSchema.pre('validate', function(next) {
   if (this.reservedStock !== undefined) this.reservedStock = Number(this.reservedStock);
   if (this.lowStockThreshold !== undefined) this.lowStockThreshold = Number(this.lowStockThreshold);
   
-  next();
 });
 
 // ── PRE-SAVE: generate slug ───────────────────────────────────────
 // ✅ FIXED: Properly defined pre-save hook
-productSchema.pre('save', function (next) {
+productSchema.pre('save', function () {
   try {
     if (this.isModified('name') || !this.slug) {
       this.slug = this.name
@@ -169,9 +168,9 @@ productSchema.pre('save', function (next) {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '');
     }
-    next();
+    
   } catch (error) {
-    next(error);
+    
   }
 });
 
