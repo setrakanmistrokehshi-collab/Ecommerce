@@ -159,14 +159,20 @@ productSchema.pre('validate', function(next) {
 });
 
 // ── PRE-SAVE: generate slug ───────────────────────────────────────
+// ✅ FIXED: Properly defined pre-save hook
 productSchema.pre('save', function (next) {
-  if (this.isModified('name') || !this.slug) {
-    this.slug = this.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+  try {
+    if (this.isModified('name') || !this.slug) {
+      this.slug = this.name
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+    }
+    next();
+  } catch (error) {
+    next(error);
   }
-  next();
 });
 
 // ── METHOD: recalculate rating (only non-hidden reviews) ──────────
