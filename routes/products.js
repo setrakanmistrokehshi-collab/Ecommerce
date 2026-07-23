@@ -11,6 +11,7 @@ const { AppError } = require('../middleware/errorHandler');
 const { reviewLimiter } = require('../middleware/rateLimiter');
 const { cacheGet, cacheSet, cacheDel, cacheDelPattern } = require('../config/redis');
 const {
+  uploadToCloudinary,
   deleteFromCloudinary,
   deleteMultipleFromCloudinary,
   getOptimizedUrl,
@@ -79,11 +80,6 @@ async function generateUniqueSlug(name, excludeId = null) {
   return `${base}-${Date.now()}`;
 }
 
-// ── CLOUDINARY PUBLIC ID HELPER ──────────────────────────────────
-// Correctly derives the Cloudinary public_id (including folder path)
-// from a delivery URL, instead of assuming a hardcoded folder name.
-// Cloudinary URLs look like:
-//   https://res.cloudinary.com/<cloud>/image/upload/v169.../<folder>/<file>.<ext>
 function extractCloudinaryPublicId(imageUrl) {
   try {
     const match = imageUrl.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-zA-Z0-9]+$/);
@@ -143,8 +139,6 @@ router.get('/', [
       '-name': { name: -1 },
     };
 
-    // When a text search is active and the caller hasn't explicitly
-    // asked for a different sort, rank by relevance (textScore) first.
     let sortObj;
     let projection = '-reviews -__v';
     if (search && sort === '-createdAt') {
@@ -345,14 +339,13 @@ router.post('/:id/reviews', protect, reviewLimiter, [
 // ADMIN ROUTES (Permission based)
 // ═══════════════════════════════════════════════════════════════════
 
-// ── ADMIN: CREATE PRODUCT
+// ── ADMIN: CREATE PRODUCT ─────────────────────────────────────────
 router.post('/',
   protect,
   restrictTo(...STAFF_ROLES),
   requirePermission(PERMISSIONS.PRODUCTS_CREATE),
   [
     body('name').notEmpty().trim().isLength({ max: 120 }),
-    body('shortDescription').optional().isLength({ max: 200 }),
     body('description').notEmpty().trim().isLength({ max: 2000 }),
     body('price').isFloat({ min: 0 }),
     body('category').isIn(['immunity', 'energy', 'vitamins', 'weight', 'beauty', 'general']),
@@ -362,134 +355,55 @@ router.post('/',
   validate,
   async (req, res, next) => {
     try {
-      // ── Sanitize and prepare data ──
-      const {
-        name,
-        shortDescription,
-        description,
-        price,
-        category,
-        stock,
-        originalPrice,
-        servings,
-        howToUse,
-        nafdac,
-        badge,
-        emoji,
-        ingredients,
-        benefits,
-        tags,
-        isFeatured,
-        isActive,
-        metaTitle,
-        metaDescription,
-      } = req.body;
+      // Generate a slug guaranteed to be unique, instead of a raw
+     
+      const slug = await generateUniqueSlug(req.body.name);
 
-      // ── Generate unique slug ──
-      const slug = await generateUniqueSlug(name);
-
-      // ── Build clean product data ──
       const productData = {
-        name: name.trim(),
-        shortDescription: shortDescription?.trim() || '',
-        description: description.trim(),
-        price: Number(price),
-        stock: Number(stock),
-        category,
+        ...req.body,
         slug,
-        // Optional fields
-        ...(originalPrice && { originalPrice: Number(originalPrice) }),
-        ...(servings && { servings: Number(servings) }),
-        ...(howToUse && { howToUse: howToUse.trim() }),
-        ...(nafdac && { nafdac: nafdac.trim() }),
-        ...(badge && { badge }),
-        ...(emoji && { emoji }),
-        ...(metaTitle && { metaTitle: metaTitle.trim() }),
-        ...(metaDescription && { metaDescription: metaDescription.trim() }),
-        // Arrays - ensure they're arrays
-        ingredients: Array.isArray(ingredients) ? ingredients.filter(i => i && i.trim()) : [],
-        benefits: Array.isArray(benefits) ? benefits.filter(b => b && b.trim()) : [],
-        tags: Array.isArray(tags) ? tags.filter(t => t && t.trim()) : [],
-        // Booleans
-        isFeatured: isFeatured === true || isFeatured === 'true',
-        isActive: isActive !== undefined ? isActive : true,
       };
 
-      // ── Create product ──
       const product = await Product.create(productData);
 
-      // ── Clear cache ──
+      // Clear cache
       await clearProductCache();
 
-      logger.info(`📦 Product created: ${product.name} (${product._id}) by ${req.user.email}`);
+      logger.info(`📦 Product created: ${product.name} (${product._id}) by ${req.user.email} (${req.user._id})`);
 
       res.status(201).json({
         success: true,
-        product,
+        product
       });
     } catch (err) {
-      // ── Handle errors ──
+      // Defensive fallback in case of a last-instant collision
+      // (e.g. two admins creating the same-named product simultaneously).
       if (err?.code === 11000 && err?.keyPattern?.slug) {
-        return next(new AppError(
-          'A product with a very similar name already exists. Please try a different name.',
-          409
-        ));
+        return next(new AppError('A product with a very similar name already exists. Please try a different name.', 409));
       }
-
-      // Handle Mongoose validation errors
-      if (err.name === 'ValidationError') {
-        const errors = Object.values(err.errors).map(e => e.message);
-        return res.status(400).json({
-          success: false,
-          message: 'Validation error',
-          errors,
-        });
-      }
-
       logger.error('❌ Error creating product:', err);
       next(err);
     }
-  });
+  }
+);
 
-// ── UPDATE PRODUCT ── (with unique slug handling)
+// ── ADMIN: UPDATE PRODUCT ─────────────────────────────────────────
 router.patch('/:id',
   protect,
   restrictTo(...STAFF_ROLES),
   requirePermission(PERMISSIONS.PRODUCTS_UPDATE),
   async (req, res, next) => {
     try {
-      const product = await Product.findById(req.params.id);
-      if (!product) {
-        return next(new AppError('Product not found', 404));
-      }
-
-      // ── Prevent updating sensitive fields ──
-      const disallowed = ['_id', 'reviews', 'rating', 'numReviews', 'totalSold', 'images'];
+      // Prevent updating sensitive fields
+      const disallowed = ['_id', 'reviews', 'rating', 'numReviews', 'totalSold', 'images', 'slug'];
       disallowed.forEach((f) => delete req.body[f]);
 
-      // ── If name is being updated, generate new unique slug ──
-      if (req.body.name && req.body.name !== product.name) {
+      // If name is being updated, regenerate a unique slug too
+      if (req.body.name) {
         req.body.slug = await generateUniqueSlug(req.body.name, req.params.id);
       }
 
-      // ── Sanitize arrays ──
-      ['ingredients', 'benefits', 'tags'].forEach((field) => {
-        if (req.body[field]) {
-          req.body[field] = Array.isArray(req.body[field])
-            ? req.body[field].filter(item => item && item.trim())
-            : [];
-        }
-      });
-
-      // ── Convert numeric fields ──
-      ['price', 'stock', 'originalPrice', 'servings'].forEach((field) => {
-        if (req.body[field] !== undefined) {
-          req.body[field] = Number(req.body[field]);
-        }
-      });
-
-      // ── Update product ──
-      const updatedProduct = await Product.findByIdAndUpdate(
+      const product = await Product.findByIdAndUpdate(
         req.params.id,
         req.body,
         {
@@ -499,25 +413,222 @@ router.patch('/:id',
         }
       );
 
-      // ── Clear cache ──
-      await clearProductCache(updatedProduct.slug);
+      if (!product) {
+        return next(new AppError('Product not found', 404));
+      }
 
-      logger.info(`📝 Product updated: ${updatedProduct._id} by ${req.user.email}`);
+      // Clear cache
+      await clearProductCache(product.slug);
+
+      logger.info(`📝 Product updated: ${product._id} by ${req.user.email} (${req.user._id})`);
 
       res.json({
         success: true,
-        product: updatedProduct,
+        product
       });
     } catch (err) {
-      // ── Handle duplicate slug error ──
       if (err?.code === 11000 && err?.keyPattern?.slug) {
+        return next(new AppError('A product with a very similar name already exists. Please try a different name.', 409));
+      }
+      logger.error('❌ Error updating product:', err);
+      next(err);
+    }
+  }
+);
+
+// ── ADMIN: UPLOAD IMAGES ──────────────────────────────────────────
+router.post(
+  '/:id/images',
+  protect,
+  restrictTo(...STAFF_ROLES),
+  requirePermission(PERMISSIONS.PRODUCTS_CREATE),
+  (req, res, next) => {
+    if (!isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Image upload service is not available. Please configure Cloudinary.',
+      });
+    }
+    next();
+  },
+  handleUpload('images', MAX_FILES),
+  handleMulterError,
+  async (req, res, next) => {
+    // Tracks what actually made it to Cloudinary in this request, so we
+    // can roll it back if the DB write fails after the upload succeeds.
+    let uploadedPublicIds = [];
+
+    try {
+      if (!req.files || req.files.length === 0) {
+        return next(new AppError('No images uploaded', 400));
+      }
+
+      const product = await Product.findById(req.params.id).select('images');
+      if (!product) {
+        return next(new AppError('Product not found', 404));
+      }
+      if (product.images.length + req.files.length > 10) {
         return next(new AppError(
-          'A product with this name already exists. Please use a different name.',
-          409
+          `Product cannot have more than 10 images. Currently has ${product.images.length}.`,
+          400
+        ));
+      }
+      const uploadResults = await Promise.all(
+        req.files.map((file) => uploadToCloudinary(file))
+      );
+      uploadedPublicIds = uploadResults.map((r) => r.public_id);
+
+      const updated = await Product.findOneAndUpdate(
+        {
+          _id: req.params.id,
+          $expr: {
+            $lte: [{ $add: [{ $size: '$images' }, uploadedPublicIds.length] }, 10],
+          },
+        },
+        { $push: { images: { $each: uploadedPublicIds } } },
+        { new: true }
+      );
+
+      if (!updated) {
+        
+        await deleteMultipleFromCloudinary(uploadedPublicIds);
+        const current = await Product.findById(req.params.id).select('images');
+        if (!current) {
+          return next(new AppError('Product not found', 404));
+        }
+        return next(new AppError(
+          `Product cannot have more than 10 images. Currently has ${current.images.length}.`,
+          400
         ));
       }
 
-      logger.error('❌ Error updating product:', err);
+      // Clear cache
+      await clearProductCache(updated.slug);
+
+      logger.info(`📸 ${uploadedPublicIds.length} image(s) uploaded for product ${updated._id} by ${req.user.email} (${req.user._id})`);
+
+      res.status(201).json({
+        success: true,
+        message: `${uploadedPublicIds.length} image(s) uploaded successfully`,
+        images: updated.images.map((id) => getOptimizedUrl(id)),
+        thumbnail: updated.images[0] ? getThumbnailUrl(updated.images[0]) : null,
+        
+        imagePublicIds: updated.images,
+      });
+    } catch (err) {
+      
+      if (uploadedPublicIds.length) {
+        await deleteMultipleFromCloudinary(uploadedPublicIds);
+      }
+      logger.error('❌ Error uploading images:', err);
+      next(err);
+    }
+  }
+);
+
+// ── ADMIN: DELETE SINGLE IMAGE ────────────────────────────────────
+router.delete(
+  '/:id/images',
+  protect,
+  restrictTo(...STAFF_ROLES),
+  requirePermission(PERMISSIONS.PRODUCTS_UPDATE),
+  [
+    body('publicId').notEmpty().withMessage('publicId is required'),
+  ],
+  validate,
+  async (req, res, next) => {
+    try {
+      const product = await Product.findById(req.params.id);
+      if (!product) {
+        return next(new AppError('Product not found', 404));
+      }
+
+      const { publicId } = req.body;
+
+      // Verify image belongs to product
+      if (!product.images.includes(publicId)) {
+        return next(new AppError('Image not found on this product', 404));
+      }
+
+      const resolvedId = publicId.includes('http')
+        ? extractCloudinaryPublicId(publicId)
+        : publicId;
+
+      if (!resolvedId) {
+        logger.warn(`⚠️ Could not resolve Cloudinary public_id: ${publicId}`);
+      } else {
+        const result = await deleteFromCloudinary(resolvedId);
+        if (result?.result === 'error' || result?.result === 'not found') {
+          logger.warn(`⚠️ Failed to delete from Cloudinary (public_id: ${resolvedId}): ${JSON.stringify(result)}`);
+        }
+      }
+
+      // Remove from DB
+      product.images = product.images.filter((img) => img !== publicId);
+      await product.save({ validateBeforeSave: false });
+
+      // Clear cache
+      await clearProductCache(product.slug);
+
+      logger.info(`🗑️ Image deleted from product ${product._id} by ${req.user.email} (${req.user._id})`);
+
+      res.json({
+        success: true,
+        message: 'Image deleted successfully',
+        images: product.images.map((id) => getOptimizedUrl(id)),
+        imagePublicIds: product.images,
+      });
+    } catch (err) {
+      logger.error('❌ Error deleting image:', err);
+      next(err);
+    }
+  }
+);
+
+// ── ADMIN: REORDER IMAGES ─────────────────────────────────────────
+router.patch(
+  '/:id/images/reorder',
+  protect,
+  restrictTo(...STAFF_ROLES),
+  requirePermission(PERMISSIONS.PRODUCTS_UPDATE),
+  [
+    body('images').isArray({ min: 1 }).withMessage('images must be a non-empty array'),
+   
+    body('images.*').notEmpty().withMessage('Each image entry must be a valid public_id'),
+  ],
+  validate,
+  async (req, res, next) => {
+    try {
+      const product = await Product.findById(req.params.id);
+      if (!product) {
+        return next(new AppError('Product not found', 404));
+      }
+
+      const incoming = req.body.images;
+
+      const invalid = incoming.filter((id) => !product.images.includes(id));
+      if (invalid.length > 0) {
+        return next(new AppError('One or more images do not belong to this product', 400));
+      }
+      if (incoming.length !== product.images.length) {
+        return next(new AppError('Reordered images must include every existing image exactly once', 400));
+      }
+
+      product.images = incoming;
+      await product.save({ validateBeforeSave: false });
+
+      // Clear cache
+      await clearProductCache(product.slug);
+
+      logger.info(`🔄 Images reordered for product ${product._id} by ${req.user.email} (${req.user._id})`);
+
+      res.json({
+        success: true,
+        images: product.images.map((id) => getOptimizedUrl(id)),
+        imagePublicIds: product.images,
+      });
+    } catch (err) {
+      logger.error('❌ Error reordering images:', err);
       next(err);
     }
   }
@@ -568,11 +679,9 @@ router.delete('/:id/permanent',
         return next(new AppError('Product not found', 404));
       }
 
-      // Delete all images from Cloudinary, deriving each public_id from
-      // its actual URL rather than a hardcoded folder guess.
       if (product.images.length > 0 && isConfigured()) {
         const publicIds = product.images
-          .map(extractCloudinaryPublicId)
+          .map((img) => (img.includes('http') ? extractCloudinaryPublicId(img) : img))
           .filter(Boolean);
 
         if (publicIds.length > 0) {
