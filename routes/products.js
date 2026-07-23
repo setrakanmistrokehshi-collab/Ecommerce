@@ -304,7 +304,7 @@ router.post('/:id/reviews', protect, reviewLimiter, [
         'reviews.user': { $ne: req.user._id },
       },
       { $push: { reviews: newReview } },
-      { new: true }
+      {  returnDocument: 'after', runValidators: true,}
     );
 
     if (!updated) {
@@ -407,7 +407,7 @@ router.patch('/:id',
         req.params.id,
         req.body,
         {
-          new: true,
+           returnDocument: 'after',
           runValidators: true,
           select: '-__v',
         }
@@ -644,7 +644,8 @@ router.delete('/:id',
       const product = await Product.findByIdAndUpdate(
         req.params.id,
         { isActive: false },
-        { new: true }
+        {  returnDocument: 'after', runValidators: true,
+        }
       );
 
       if (!product) {

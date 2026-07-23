@@ -151,6 +151,7 @@ router.get('/analytics/categories', requirePermission(PERMISSIONS.REPORTS_VIEW),
         },
       },
       { $sort: { revenue: -1 } },
+      {  returnDocument: 'after', runValidators: true,}
     ]);
     res.json({ success: true, data });
   } catch (err) { next(err); }
@@ -308,7 +309,7 @@ router.patch('/products/:id/stock', requirePermission(PERMISSIONS.PRODUCTS_STOCK
     const product = await Product.findByIdAndUpdate(
       req.params.id,
       { stock: req.body.stock },
-      { new: true }
+      {  returnDocument: 'after', runValidators: true,}
     );
     if (!product) return next(new AppError('Product not found', 404));
     logger.info(`Stock updated: ${product.name} → ${req.body.stock} by ${req.user.email}`);
