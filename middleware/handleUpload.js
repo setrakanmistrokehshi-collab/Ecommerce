@@ -2,14 +2,6 @@
 
 const multer = require('multer');
 
-/**
- * handleUpload — wraps multer middleware and converts its errors
- * into the same JSON shape as the rest of the API.
- *
- * Usage (in routes):
- *   router.post('/:id/images', protect, restrictTo('admin'),
- *     handleUpload('images', 5), uploadImages);
- */
 function handleUpload(fieldName, maxCount = 5) {
   const { upload } = require('../config/cloudinary');
   const multerMiddleware = upload.array(fieldName, maxCount);
