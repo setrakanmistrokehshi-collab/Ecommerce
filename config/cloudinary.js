@@ -6,9 +6,6 @@ const streamifier = require('streamifier');
 const { randomUUID } = require('crypto');
 const logger = require('../utils/logger');
 
-/* -------------------------------------------------------------------------- */
-/*                                CONFIGURATION                               */
-/* -------------------------------------------------------------------------- */
 
 const isConfigured = () =>
   Boolean(
@@ -44,9 +41,6 @@ const ALLOWED_MIMES = new Set([
   'image/gif',
 ]);
 
-/* -------------------------------------------------------------------------- */
-/*                               MULTER CONFIG                                */
-/* -------------------------------------------------------------------------- */
 
 function fileFilter(req, file, cb) {
   if (!ALLOWED_MIMES.has(file.mimetype)) {
@@ -68,10 +62,6 @@ const upload = multer({
 const uploadSingle = upload.single('image');
 
 const uploadMultiple = upload.array('images', MAX_FILES);
-
-/* -------------------------------------------------------------------------- */
-/*                          CLOUDINARY STREAM UPLOAD                          */
-/* -------------------------------------------------------------------------- */
 
 function uploadBuffer(buffer, options = {}) {
   return new Promise((resolve, reject) => {
@@ -113,8 +103,6 @@ function uploadBuffer(buffer, options = {}) {
   });
 }
 
-/* -------------------------------------------------------------------------- */
-
 async function uploadToCloudinary(file, options = {}) {
   if (!isConfigured()) {
     throw new Error('Cloudinary is not configured.');
@@ -137,7 +125,6 @@ async function uploadToCloudinary(file, options = {}) {
   }
 }
 
-/* -------------------------------------------------------------------------- */
 
 async function deleteFromCloudinary(publicId) {
   if (!publicId) return null;

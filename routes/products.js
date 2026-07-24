@@ -76,9 +76,10 @@ async function generateUniqueSlug(name, excludeId = null) {
     candidate = `${base}-${suffix++}`;
   }
 
-  // Extremely unlikely fallback: make it unique with a timestamp.
   return `${base}-${Date.now()}`;
 }
+
+// ── CLOUDINARY PUBLIC ID HELPER ──────────────────────────────────
 
 function extractCloudinaryPublicId(imageUrl) {
   try {
@@ -88,6 +89,23 @@ function extractCloudinaryPublicId(imageUrl) {
     logger.warn('⚠️ Failed to parse Cloudinary public_id from URL:', imageUrl);
   }
   return null;
+}
+
+function normalizeImageInputs(images) {
+  if (images === undefined || images === null) return undefined;
+
+  const rawList = Array.isArray(images) ? images : [images];
+
+  const flattened = rawList
+    .flatMap((val) => (typeof val === 'string' ? val.split(/[\n,]+/) : [val]))
+    .map((val) => (typeof val === 'string' ? val.trim() : ''))
+    .filter(Boolean);
+
+  const deduped = [...new Set(flattened)];
+
+  return deduped
+    .map((val) => (val.includes('cloudinary.com') ? (extractCloudinaryPublicId(val) || val) : val))
+    .slice(0, 10);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -304,7 +322,7 @@ router.post('/:id/reviews', protect, reviewLimiter, [
         'reviews.user': { $ne: req.user._id },
       },
       { $push: { reviews: newReview } },
-      {  returnDocument: 'after', runValidators: true,}
+      { new: true }
     );
 
     if (!updated) {
@@ -351,11 +369,11 @@ router.post('/',
     body('category').isIn(['immunity', 'energy', 'vitamins', 'weight', 'beauty', 'general']),
     body('stock').isInt({ min: 0 }),
     body('discount').optional().isFloat({ min: 0, max: 100 }),
+    body('images').optional(),
   ],
   validate,
   async (req, res, next) => {
     try {
-      // Generate a slug guaranteed to be unique, instead of a raw
      
       const slug = await generateUniqueSlug(req.body.name);
 
@@ -363,6 +381,11 @@ router.post('/',
         ...req.body,
         slug,
       };
+
+      const normalizedImages = normalizeImageInputs(req.body.images);
+      if (normalizedImages !== undefined) {
+        productData.images = normalizedImages;
+      }
 
       const product = await Product.create(productData);
 
@@ -376,8 +399,7 @@ router.post('/',
         product
       });
     } catch (err) {
-      // Defensive fallback in case of a last-instant collision
-      // (e.g. two admins creating the same-named product simultaneously).
+     
       if (err?.code === 11000 && err?.keyPattern?.slug) {
         return next(new AppError('A product with a very similar name already exists. Please try a different name.', 409));
       }
@@ -394,9 +416,14 @@ router.patch('/:id',
   requirePermission(PERMISSIONS.PRODUCTS_UPDATE),
   async (req, res, next) => {
     try {
-      // Prevent updating sensitive fields
-      const disallowed = ['_id', 'reviews', 'rating', 'numReviews', 'totalSold', 'images', 'slug'];
+      
+      const disallowed = ['_id', 'reviews', 'rating', 'numReviews', 'totalSold', 'slug'];
       disallowed.forEach((f) => delete req.body[f]);
+
+     
+      if (req.body.images !== undefined) {
+        req.body.images = normalizeImageInputs(req.body.images) || [];
+      }
 
       // If name is being updated, regenerate a unique slug too
       if (req.body.name) {
@@ -407,7 +434,7 @@ router.patch('/:id',
         req.params.id,
         req.body,
         {
-           returnDocument: 'after',
+          new: true,
           runValidators: true,
           select: '-__v',
         }
@@ -454,8 +481,7 @@ router.post(
   handleUpload('images', MAX_FILES),
   handleMulterError,
   async (req, res, next) => {
-    // Tracks what actually made it to Cloudinary in this request, so we
-    // can roll it back if the DB write fails after the upload succeeds.
+   
     let uploadedPublicIds = [];
 
     try {
@@ -473,6 +499,7 @@ router.post(
           400
         ));
       }
+
       const uploadResults = await Promise.all(
         req.files.map((file) => uploadToCloudinary(file))
       );
@@ -490,7 +517,7 @@ router.post(
       );
 
       if (!updated) {
-        
+      
         await deleteMultipleFromCloudinary(uploadedPublicIds);
         const current = await Product.findById(req.params.id).select('images');
         if (!current) {
@@ -512,11 +539,11 @@ router.post(
         message: `${uploadedPublicIds.length} image(s) uploaded successfully`,
         images: updated.images.map((id) => getOptimizedUrl(id)),
         thumbnail: updated.images[0] ? getThumbnailUrl(updated.images[0]) : null,
-        
+       
         imagePublicIds: updated.images,
       });
     } catch (err) {
-      
+     
       if (uploadedPublicIds.length) {
         await deleteMultipleFromCloudinary(uploadedPublicIds);
       }
@@ -550,6 +577,7 @@ router.delete(
         return next(new AppError('Image not found on this product', 404));
       }
 
+      
       const resolvedId = publicId.includes('http')
         ? extractCloudinaryPublicId(publicId)
         : publicId;
@@ -644,8 +672,7 @@ router.delete('/:id',
       const product = await Product.findByIdAndUpdate(
         req.params.id,
         { isActive: false },
-        {  returnDocument: 'after', runValidators: true,
-        }
+        { new: true }
       );
 
       if (!product) {
@@ -680,6 +707,8 @@ router.delete('/:id/permanent',
         return next(new AppError('Product not found', 404));
       }
 
+      // Delete all images from Cloudinary. `images` stores public_ids
+    
       if (product.images.length > 0 && isConfigured()) {
         const publicIds = product.images
           .map((img) => (img.includes('http') ? extractCloudinaryPublicId(img) : img))
@@ -749,9 +778,19 @@ router.get('/admin/all',
         Product.countDocuments(filter),
       ]);
 
+     
+      const productsWithUrls = products.map((product) => ({
+        ...product,
+        thumbnail: product.images?.length > 0
+          ? getThumbnailUrl(product.images[0])
+          : null,
+        images: product.images?.map((img) => getOptimizedUrl(img)) || [],
+        imagePublicIds: product.images || [],
+      }));
+
       res.json({
         success: true,
-        products,
+        products: productsWithUrls,
         pagination: {
           page: pageNum,
           limit: limitNum,
