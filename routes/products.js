@@ -540,12 +540,12 @@ router.post(
         images: product.images.map((id) => getOptimizedUrl(id)),
         thumbnail: product.images[0] ? getThumbnailUrl(product.images[0]) : null,
        
-        imagePublicIds: updated.images,
+        imagePublicIds: product.images,
       });
     } catch (err) {
      
       if (uploadedPublicIds.length) {
-        await deleteMultipleFromCloudinary(uploadedPublicIds);
+        await deleteMultipleFromCloudinary(uploadedFiles.map((file) => file.public_id || file.filename));
       }
       logger.error('❌ Error uploading images:', err);
       next(err);
