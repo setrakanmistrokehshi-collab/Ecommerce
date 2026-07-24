@@ -322,7 +322,7 @@ router.post('/:id/reviews', protect, reviewLimiter, [
         'reviews.user': { $ne: req.user._id },
       },
       { $push: { reviews: newReview } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updated) {
@@ -434,7 +434,7 @@ router.patch('/:id',
         req.params.id,
         req.body,
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
           select: '-__v',
         }
@@ -464,11 +464,13 @@ router.patch('/:id',
 );
 
 // ── ADMIN: UPLOAD IMAGES ──────────────────────────────────────────
+
 router.post(
   '/:id/images',
   protect,
   restrictTo(...STAFF_ROLES),
   requirePermission(PERMISSIONS.PRODUCTS_CREATE),
+  // Check Cloudinary configuration
   (req, res, next) => {
     if (!isConfigured()) {
       return res.status(503).json({
@@ -478,67 +480,65 @@ router.post(
     }
     next();
   },
+  // Handle upload - this processes the files
   handleUpload('images', MAX_FILES),
-  handleMulterError,
+  // Main upload handler
   async (req, res, next) => {
-   
-    let uploadedPublicIds = [];
-
+    // Store uploaded file info for cleanup if something fails
+    const uploadedFiles = [];
+    
     try {
+      // Check if files were uploaded
       if (!req.files || req.files.length === 0) {
         return next(new AppError('No images uploaded', 400));
       }
 
-      const product = await Product.findById(req.params.id).select('images');
+      // Find product
+      const product = await Product.findById(req.params.id).select('images name slug');
       if (!product) {
+        // Clean up uploaded files if product not found
+        await cleanupUploadedFiles(req.files);
         return next(new AppError('Product not found', 404));
       }
-      if (product.images.length + req.files.length > 10) {
+
+      // Check image limit (max 10 images per product)
+      const totalAfterUpload = product.images.length + req.files.length;
+      if (totalAfterUpload > 10) {
+        // Clean up uploaded files if limit exceeded
+        await cleanupUploadedFiles(req.files);
         return next(new AppError(
           `Product cannot have more than 10 images. Currently has ${product.images.length}.`,
           400
         ));
       }
 
-      const uploadResults = await Promise.all(
-        req.files.map((file) => uploadToCloudinary(file))
-      );
-      uploadedPublicIds = uploadResults.map((r) => r.public_id);
-
-      const updated = await Product.findOneAndUpdate(
-        {
-          _id: req.params.id,
-          $expr: {
-            $lte: [{ $add: [{ $size: '$images' }, uploadedPublicIds.length] }, 10],
-          },
-        },
-        { $push: { images: { $each: uploadedPublicIds } } },
-        { new: true }
-      );
-
-      if (!updated) {
-      
-        await deleteMultipleFromCloudinary(uploadedPublicIds);
-        const current = await Product.findById(req.params.id).select('images');
-        if (!current) {
-          return next(new AppError('Product not found', 404));
+      // ✅ Extract Cloudinary URLs from uploaded files
+      const newImageUrls = req.files.map((file) => {
+        // Multer-Cloudinary stores the URL in file.path or file.secure_url
+        const url = file.path || file.secure_url || file.location;
+        
+        // Store public ID for potential cleanup
+        if (file.public_id || file.filename) {
+          uploadedFiles.push(file.public_id || file.filename);
         }
-        return next(new AppError(
-          `Product cannot have more than 10 images. Currently has ${current.images.length}.`,
-          400
-        ));
-      }
+        
+        return url;
+      });
+
+      // ✅ Add images to product
+      product.images.push(...newImageUrls);
+      await product.save({ validateBeforeSave: false });
 
       // Clear cache
-      await clearProductCache(updated.slug);
+      await clearProductCache(product.slug);
 
-      logger.info(`📸 ${uploadedPublicIds.length} image(s) uploaded for product ${updated._id} by ${req.user.email} (${req.user._id})`);
+      logger.info(`📸 ${uploadedFiles.length} image(s) uploaded for product ${product._id} by ${req.user.email} (${req.user._id})`);
 
       res.status(201).json({
         success: true,
-        message: `${uploadedPublicIds.length} image(s) uploaded successfully`,
-        images: updated.images.map((id) => getOptimizedUrl(id)),
-        thumbnail: updated.images[0] ? getThumbnailUrl(updated.images[0]) : null,
+        message: `${uploadedFiles.length} image(s) uploaded successfully`,
+        images: product.images.map((id) => getOptimizedUrl(id)),
+        thumbnail: product.images[0] ? getThumbnailUrl(product.images[0]) : null,
        
         imagePublicIds: updated.images,
       });
