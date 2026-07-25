@@ -6,6 +6,7 @@ const User = require('../models/User');
 const Product = require('../models/Product');
 const { protect } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
+const password = require('../utils/password');
 
 const router = express.Router();
 router.use(protect);
@@ -32,7 +33,8 @@ router.patch('/profile', [
     forbidden.forEach(f => delete req.body[f]);
 
     const user = await User.findByIdAndUpdate(req.user._id, req.body, {
-      new: true, runValidators: true,
+      returnDocument: 'after',
+      runValidators: true,
     });
     res.json({ success: true, user: user.toSafeObject() });
   } catch (err) { next(err); }

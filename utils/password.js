@@ -2,14 +2,19 @@
 
 const argon2 = require('argon2');
 
+// Prefer explicit encoding and a length check on the pepper
+const pepper = process.env.ARGON2_PEPPER;
+if (process.env.NODE_ENV === 'production' && !pepper) {
+  throw new Error('ARGON2_PEPPER is required in production');
+}
+
 const HASH_OPTIONS = {
   type: argon2.argon2id,
-  memoryCost: 65536,        // 64 MB — benchmark on prod; target 50–100ms per verify
+  memoryCost: 65536,
   timeCost: 3,
   parallelism: 1,
-  secret: process.env.ARGON2_PEPPER
-    ? Buffer.from(process.env.ARGON2_PEPPER)
-    : undefined,
+  saltLength: 32,
+  secret: pepper ? Buffer.from(pepper, 'utf8') : undefined,
 };
 
 async function hashPassword(plaintext) {
