@@ -1,7 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const argon2   = require('argon2');
+const { hashPassword, verifyPassword } = require('../utils/password');
 
 const { getPermissionsForRole, ALL_PERMISSIONS } = require('../config/permission');
 
@@ -109,7 +109,7 @@ userSchema.virtual('isLocked').get(function () {
 userSchema.pre('save', async function () {
   
     if (this.isModified('password')) {
-      this.password = await argon2.hash(this.password);
+      this.password = await hashPassword(this.password);
     }
     if (!this.isNew && this.isModified('password')) {
       this.tokenVersion = (this.tokenVersion || 0) + 1;
@@ -120,7 +120,7 @@ userSchema.pre('save', async function () {
 
 // ── METHOD: compare password ────────────────────────────────────
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  return argon2.verify(this.password, candidatePassword);
+  return verifyPassword(this.password, candidatePassword);
 };
 
 // ── METHOD: increment login attempts / lock ─────────────────────

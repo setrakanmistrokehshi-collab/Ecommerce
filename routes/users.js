@@ -6,7 +6,7 @@ const User = require('../models/User');
 const Product = require('../models/Product');
 const { protect } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
-const password = require('../utils/password');
+
 
 const router = express.Router();
 router.use(protect);
@@ -43,16 +43,23 @@ router.patch('/profile', [
 // PATCH /api/v1/users/change-password
 router.patch('/change-password', [
   body('currentPassword').notEmpty(),
-  body('newPassword').isLength({ min: 8 }).matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/),
+  body('newPassword')
+    .isLength({ min: 8 })
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/),
 ], async (req, res, next) => {
   try {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
+    if (!errors.isEmpty()) {
+      return res.status(422).json({ errors: errors.array() });
+    }
 
-    const user = await User.findById(req.user._id).select('+password');
-    const isMatch = await user.comparePassword(req.body.currentPassword);
-    if (!isMatch) return next(new AppError('Current password is incorrect', 401));
+    const user = await User.findById(req.user._id).select('+password +tokenVersion');
+    if (!user) return next(new AppError('User not found', 404));
 
+    const { valid } = await user.comparePassword(req.body.currentPassword);
+    if (!valid) {
+      return next(new AppError('Current password is incorrect', 401));
+    }
     user.password = req.body.newPassword;
     await user.save();
     res.json({ success: true, message: 'Password changed successfully' });
