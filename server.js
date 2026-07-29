@@ -32,6 +32,8 @@ const userRoutes = require("./routes/users");
 const adminRoutes = require("./routes/admin");
 const categoryRoutes = require("./routes/categories");
 const settingRoutes = require("./routes/admin")
+const { cacheGet, cacheSet } = require('./config/redis');
+
 
 const { errorHandler } = require("./middleware/errorHandler");
 const {
@@ -165,32 +167,26 @@ app.get('/', (req, res) => {
 });
 
 
-
 // ✅ ADD REDIS HEALTH CHECK ENDPOINT
-app.get('/health/redis', async (req, res) => {
+
+async function checkRedis() {
   try {
-    const result = await testRedisConnection();
-    if (result.success) {
-      res.json({
-        status: 'ok',
-        redis: 'connected',
-        message: result.message,
-      });
+    await cacheSet('health:check', { ok: true }, 10);
+    const val = await cacheGet('health:check');
+    if (val?.ok) {
+      logger.info('Redis cache: connected and working');
     } else {
-      res.status(503).json({
-        status: 'error',
-        redis: 'disconnected',
-        error: result.error,
-      });
+      logger.warn('Redis cache: connected but read failed');
     }
   } catch (err) {
-    res.status(503).json({
-      status: 'error',
-      redis: 'disconnected',
-      error: err.message,
-    });
+    logger.error('Redis cache: NOT connected —', err.message);
+    logger.warn('Products will load from MongoDB on every request until Redis is fixed');
   }
-});
+}
+
+checkRedis();
+
+
 // ── API ROUTES ────────────────────────────────────────────────────
 
 app.use("/api/v1/auth", authRoutes);

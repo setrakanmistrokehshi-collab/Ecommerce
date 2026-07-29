@@ -1,0 +1,9 @@
+{"level":"info","message":"🔄 Running scheduled queue processing...","timestamp":"2026-07-25 16:00:00"}
+{"level":"info","message":"🔄 Running scheduled queue processing...","timestamp":"2026-07-25 16:20:00"}
+{"level":"info","message":"🔄 Running scheduled queue processing...","timestamp":"2026-07-25 16:40:00"}
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-07-29 12:17:00"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-07-29 12:17:00"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-07-29 12:17:00"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-07-29 12:17:00"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-07-29 12:17:10"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-07-29 12:17:10"}

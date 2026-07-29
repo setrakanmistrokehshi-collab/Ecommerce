@@ -100,6 +100,15 @@ userSchema.index({ isActive: 1 });
 userSchema.index({ emailVerificationToken: 1 }, { sparse: true });
 userSchema.index({ passwordResetToken: 1 },     { sparse: true });
 
+const productSchema = new mongoose.Schema({
+  // ... product schema definition
+});
+
+productSchema.index({ isActive: 1, createdAt: -1 });   // default sort
+productSchema.index({ isActive: 1, isFeatured: 1 });   // featured filter
+productSchema.index({ isActive: 1, category: 1 });     // category filter
+productSchema.index({ name: 'text', description: 'text' }); 
+
 // ── VIRTUAL: is account locked ─────────────────────────────────
 userSchema.virtual('isLocked').get(function () {
   return !!(this.lockUntil && this.lockUntil > Date.now());
@@ -182,7 +191,7 @@ userSchema.methods.toSafeObject = function () {
     email:                this.email,
     phone:                this.phone,
     role:                 this.role,
-    permissions:          this.getEffectivePermissions(), // FIX #6: computed permissions, not just raw arrays
+    permissions:          this.getEffectivePermissions(),
     avatar:               this.avatar,
     addresses:            this.addresses,
     isEmailVerified:      this.isEmailVerified,
