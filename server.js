@@ -17,11 +17,13 @@ const express = require("express");
 const mongoose = require("mongoose");
 const helmet = require("helmet");
 const cors = require("cors");
+const passport = require("passport");
 const compression = require("compression");
 const morgan = require("morgan");
 const path = require("path");
 const hpp = require("hpp");
 const mongoSanitize = require("express-mongo-sanitize");
+
 
 const authRoutes = require("./routes/auth");
 const productRoutes = require("./routes/products");
@@ -48,7 +50,7 @@ const {
   adminLoginLimiter
 } = require("./middleware/rateLimiter");
 const logger = require("./utils/logger");
-
+ 
 // ── APP INIT ──────────────────────────────────────────────────────
 const app = express();
 app.set("trust proxy", 1);
@@ -111,7 +113,7 @@ app.use("/webhooks", express.raw({ type: "application/json", limit: "150kb" }));
 app.use("/api/v1/admin", express.json({ limit: "50kb" }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
-
+app.use(passport.initialize());
 // FIX: hpp after body parsers so it can actually inspect req.body
 app.use(hpp());
 app.use(sanitizeInput);
@@ -198,6 +200,7 @@ app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/settings", settingRoutes);
 app.use("/api/v1/webhooks", webhookRoutes);
 app.use("/api/v1/categories", categoryRoutes);
+app.use('/api/v1/auth', require('./routes/authGoogleRoutes'));
 // ── API 404 ───────────────────────────────────────────────────────
 app.use("/api", (req, res) => {
   res

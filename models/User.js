@@ -42,6 +42,28 @@ const userSchema = new mongoose.Schema({
     select: false,
   },
 
+  password: {
+  type: String,
+  required: function () {
+    return !this.authProviders || this.authProviders.includes('local');
+  },
+  select: false,
+},
+ 
+/* 2. New fields */
+googleId: {
+  type: String,
+  unique: true,
+  sparse: true, // allows many docs with googleId: undefined
+  index: true,
+},
+authProviders: {
+  type: [String],
+  enum: ['local', 'google', 'facebook', 'twitter'],
+  default: ['local'],
+},
+avatarUrl: { type: String },
+
   // ── ROLE & PERMISSIONS ──────────────────────────
   role: {
     type: String,
@@ -67,7 +89,6 @@ const userSchema = new mongoose.Schema({
     default: [],
   },
 
-  avatar: { type: String },
   addresses: {
     type: [addressSchema],
     validate: [(v) => v.length <= 10, 'Maximum 10 saved addresses'],

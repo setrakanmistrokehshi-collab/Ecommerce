@@ -526,4 +526,8 @@ router.post('/logout-all', protect, async (req, res, next) => {
   }
 });
 
+
+router.signAccessToken = signAccessToken;
+router.signRefreshToken = signRefreshToken;
+
 module.exports = router;
