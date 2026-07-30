@@ -26,6 +26,7 @@ const mongoSanitize = require("express-mongo-sanitize");
 
 
 const authRoutes = require("./routes/auth");
+const cookieParser = require('cookie-parser');
 const productRoutes = require("./routes/products");
 const orderRoutes = require("./routes/orders");
 const paymentRoutes = require("./routes/payments");
@@ -113,7 +114,7 @@ app.use("/webhooks", express.raw({ type: "application/json", limit: "150kb" }));
 app.use("/api/v1/admin", express.json({ limit: "50kb" }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
-
+app.use(cookieParser());
 
 app.use(passport.initialize());
 

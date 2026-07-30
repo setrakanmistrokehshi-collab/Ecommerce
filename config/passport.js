@@ -3,15 +3,18 @@
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const User = require('../models/User');
+const CookieStateStore = require('../utils/oauthStateStore');
+
 
 passport.use(
   new GoogleStrategy(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: process.env.GOOGLE_CALLBACK_URL, // must match server.js mount path — see README
+      callbackURL: process.env.GOOGLE_CALLBACK_URL,
       scope: ['profile', 'email'],
       state: true,
+       store: new CookieStateStore(),
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
@@ -23,7 +26,6 @@ passport.use(
         if (!email) {
           return done(null, false, { message: 'NO_EMAIL_FROM_GOOGLE' });
         }
-
         let user = await User.findOne({ googleId }).select('+tokenVersion');
 
         if (!user) {
@@ -46,7 +48,7 @@ passport.use(
               googleId,
               authProviders: ['google'],
               isEmailVerified: emailVerified,
-              // no `password` — schema must make it conditional, see User model patch
+              
             });
           }
         }

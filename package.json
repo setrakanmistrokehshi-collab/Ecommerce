@@ -21,6 +21,7 @@
     "bullmq": "^5.78.1",
     "cloudinary": "^2.5.1",
     "compression": "^1.7.4",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "device-detector-js": "^3.0.3",
     "dotenv": "^16.3.1",
