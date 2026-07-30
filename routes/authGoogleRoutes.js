@@ -70,7 +70,7 @@ router.get(
   async (req, res) => {
     try {
       const redis = getRedisClient();
-      const code = crypto.randomBytes(32).toString('hex');
+      const code = crypto.randomBytes(64).toString('hex');
 
       if (redis) {
         await redis.set(
@@ -96,9 +96,6 @@ router.get(
   }
 );
 
-// Step 3 — frontend POSTs the one-time code immediately after redirect,
-// gets back the same { success, accessToken, refreshToken, user } shape
-// your /login endpoint returns.
 router.post('/google/exchange', exchangeLimiter, async (req, res, next) => {
   try {
     const { code } = req.body;
