@@ -59,7 +59,7 @@ googleId: {
 },
 authProviders: {
   type: [String],
-  enum: ['local', 'google', 'facebook', 'twitter'],
+  enum: ['local', 'google'],
   default: ['local'],
 },
 avatarUrl: { type: String },

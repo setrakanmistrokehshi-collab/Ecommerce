@@ -70,7 +70,7 @@ router.get(
   async (req, res) => {
     try {
       const redis = getRedisClient();
-      const code = crypto.randomBytes(64).toString('hex');
+      const code = crypto.randomBytes(32).toString('hex');
 
       if (redis) {
         await redis.set(
@@ -112,11 +112,25 @@ router.post('/google/exchange', exchangeLimiter, async (req, res, next) => {
     }
 
     const key = `${EXCHANGE_PREFIX}${code}`;
-    const userId = await redis.get(key);
+    // Atomic get-and-delete — GET+DEL as two separate calls is a race:
+    // two near-simultaneous requests (StrictMode double-effect, a retried
+    // fetch, a replayed code) could both read the value before either
+    // deletes it, minting two token pairs from one code. GETDEL (Redis
+    // >=6.2 / ioredis >=4.19) is a single atomic command, so only one
+    // caller ever gets a non-null result.
+    let userId;
+    if (typeof redis.getdel === 'function') {
+      userId = await redis.getdel(key);
+    } else {
+      // Fallback for older Redis/clients without GETDEL: MULTI/EXEC is
+      // still atomic as a whole transaction (Redis is single-threaded),
+      // so concurrent callers still can't both see the value.
+      const results = await redis.multi().get(key).del(key).exec();
+      userId = results?.[0]?.[1] ?? null;
+    }
     if (!userId) {
       return res.status(400).json({ success: false, error: 'Code expired or already used' });
     }
-    await redis.del(key); // single use — burn it immediately
 
     const user = await User.findById(userId).select('+tokenVersion');
     if (!user || !user.isActive) {

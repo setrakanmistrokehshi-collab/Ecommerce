@@ -34,7 +34,7 @@ const userRoutes = require("./routes/users");
 const adminRoutes = require("./routes/admin");
 const categoryRoutes = require("./routes/categories");
 const settingRoutes = require("./routes/admin")
-const { cacheGet, cacheSet } = require('./config/redis');
+const { cacheGet, cacheSet, getRedisClient } = require('./config/redis');
 
 
 const { errorHandler } = require("./middleware/errorHandler");
@@ -113,7 +113,10 @@ app.use("/webhooks", express.raw({ type: "application/json", limit: "150kb" }));
 app.use("/api/v1/admin", express.json({ limit: "50kb" }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+
+
 app.use(passport.initialize());
+
 // FIX: hpp after body parsers so it can actually inspect req.body
 app.use(hpp());
 app.use(sanitizeInput);
