@@ -35,21 +35,15 @@ const userSchema = new mongoose.Schema({
     trim: true,
     match: [/^(\+?234|0)[789]\d{9}$/, 'Please provide a valid Nigerian phone number'],
   },
-  password: {
-    type: String,
-    required: [true, 'Password is required'],
-    minlength: [8, 'Password must be at least 8 characters'],
-    select: false,
-  },
-
-  password: {
+ password: {
   type: String,
   required: function () {
     return !this.authProviders || this.authProviders.includes('local');
   },
+  minlength: [8, 'Password must be at least 8 characters'],
   select: false,
 },
- 
+
 /* 2. New fields */
 googleId: {
   type: String,
@@ -149,8 +143,16 @@ userSchema.pre('save', async function () {
 );
 
 // ── METHOD: compare password ────────────────────────────────────
+
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  return verifyPassword(this.password, candidatePassword);
+  const { valid, rehash } = await verifyPassword(this.password, candidatePassword);
+
+  if (valid && rehash) {
+    this.password = rehash;
+    await this.save({ validateBeforeSave: false });
+  }
+ 
+  return valid;
 };
 
 // ── METHOD: increment login attempts / lock ─────────────────────

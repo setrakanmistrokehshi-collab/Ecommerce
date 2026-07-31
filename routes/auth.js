@@ -16,7 +16,7 @@ const logger = require('../utils/logger');
 const { STAFF_ROLES } = require('../config/permission');
 const { adminLoginLimiter } = require('../middleware/rateLimiter');
 const { sendLoginAlert } = require('../utils/email');
-
+const { verifyPassword } = require('../utils/password');
 
 const router = express.Router();
 
@@ -234,6 +234,10 @@ router.post('/login', useragent.express(), loginRules, validate, async (req, res
     );
 
     if (!user) return next(new AppError('Invalid credentials', 401));
+     if (!user.password) {
+      return next(new AppError('Invalid credentials', 401));
+    }
+ 
 
     // Check if account is locked
     if (user.lockUntil && user.lockUntil > Date.now()) {
@@ -306,6 +310,10 @@ router.post('/admin-login', useragent.express(), adminLoginLimiter, loginRules, 
     );
 
     if (!user) return next(new AppError('Invalid credentials', 401));
+     if (!user.password) {
+      return next(new AppError('Invalid credentials', 401));
+    }
+ 
     if (user.isLocked) return next(new AppError('Account temporarily locked. Try again later.', 423));
     if (!user.isActive) return next(new AppError('Account has been disabled. Contact support.', 403));
 
@@ -403,7 +411,7 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
       return next(new AppError('Reset link is invalid or has expired', 400));
     }
 
-    const isSamePassword = await argon2.verify(user.password, req.body.password);
+   const { valid: isSamePassword } = await verifyPassword(user.password, req.body.password);
     if (isSamePassword) {
       return next(new AppError('New password must be different from your current password', 400));
     }
@@ -457,8 +465,7 @@ router.put('/admin/settings/password',
       if (!isMatch) {
         return next(new AppError('Current password is incorrect', 401));
       }
-      
-      const isSamePassword = await argon2.verify(user.password, newPassword);
+      const { valid: isSamePassword } = await verifyPassword(user.password, req.body.password);
       if (isSamePassword) {
         return next(new AppError('New password must be different from your current password', 400));
       }

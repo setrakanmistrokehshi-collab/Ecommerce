@@ -317,7 +317,6 @@ function shouldSendLoginAlert(userId, ip, userAgent) {
 // ── EMAIL TEMPLATES ─────────────────────────────────────────────
 function buildTemplate(template, data) {
   const base = (content) => `
-    <!DOCTYPE html>
     <html>
       <head>
         <meta charset="UTF-8">
@@ -354,7 +353,7 @@ function buildTemplate(template, data) {
           <div class="content">${content}</div>
           <div class="footer">
             <p>© ${new Date().getFullYear()} Winners Health. All rights reserved.<br>
-            <a href="${process.env.BASE_URL || 'https://winnershealth.com'}/unsubscribe">Unsubscribe</a></p>
+            <a href="${process.env.BASE_URL }/unsubscribe">Unsubscribe</a></p>
           </div>
         </div>
       </body>
@@ -423,7 +422,7 @@ function buildTemplate(template, data) {
         <p>Hi ${data.name}, your order <strong>#${data.orderNumber}</strong> has been dispatched.</p>
         <p>Tracking number: <strong>${data.trackingNumber || 'Will be updated shortly'}</strong></p>
         <div style="text-align: center;">
-          <a href="${process.env.BASE_URL || 'https://winnershealth.com'}/orders/${data.orderNumber}" class="btn">Track My Order</a>
+          <a href="${process.env.BASE_URL }/orders/${data.orderNumber}" class="btn">Track My Order</a>
         </div>
       `);
 
@@ -560,7 +559,8 @@ async function sendEmailWithProvider({ to, subject, html, priority, data }) {
   const brevo = getBrevoClient();
   if (brevo) {
     try {
-      const result = await brevo.transactionalEmails.sendTransacEmail({
+      const apiInstance = new brevo.TransactionalEmailsApi();
+await apiInstance.sendTransacEmail({
         sender: { name: senderName, email: senderEmail },
         to: [{ email: to }],
         replyTo: { name: senderName, email: senderEmail },
