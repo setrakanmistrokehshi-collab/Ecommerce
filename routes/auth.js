@@ -411,7 +411,7 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
       return next(new AppError('Reset link is invalid or has expired', 400));
     }
 
-   const { valid: isSamePassword } = await verifyPassword(user.password, req.body.password);
+   const isSamePassword = await argon2.verify(user.password, req.body.password);
     if (isSamePassword) {
       return next(new AppError('New password must be different from your current password', 400));
     }
