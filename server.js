@@ -88,10 +88,13 @@ const rawOrigins = process.env.ALLOWED_ORIGINS;
 if (!rawOrigins && process.env.NODE_ENV === "production") {
   throw new Error("ALLOWED_ORIGINS must be set in production");
 }
-const allowedOrigins = (rawOrigins || "http://localhost:5173")
-  .split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
+const allowedOrigins = [
+  ...(rawOrigins ? rawOrigins.split(",").map((o) => o.trim()).filter(Boolean) : []),
+  "http://localhost:5173",
+  "https://localhost",     // Capacitor Android
+  "capacitor://localhost", // Capacitor iOS / newer Android
+  "http://localhost",
+];
 
 app.use(
   cors({
