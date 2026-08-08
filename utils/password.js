@@ -7,9 +7,6 @@ if (process.env.NODE_ENV === 'production' && !pepper) {
   throw new Error('ARGON2_PEPPER is required in production');
 }
 
-/**
- * Prefer base64 for binary peppers; fall back to UTF-8 for simple string peppers.
- */
 function loadPepper(raw) {
   if (!raw) return undefined;
   try {
@@ -19,7 +16,7 @@ function loadPepper(raw) {
       return buf;
     }
   } catch {
-    // fall through
+  
   }
   return Buffer.from(raw, 'utf8');
 }

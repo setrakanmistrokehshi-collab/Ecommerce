@@ -345,6 +345,26 @@ router.post('/nomba', async (req, res) => {
       await releaseLock(lockKey);
     }
   });
+  
+});
+// routes/webhooks.js
+router.post('/webhooks/brevo', express.json(), async (req, res) => {
+  const { event, email, ['message-id']: messageId, tag, tags } = req.body;
+
+  await EmailLog.create({
+    event,          // 'delivered', 'hardBounce', 'blocked', etc.
+    recipient: email,
+    messageId,
+    tags: tags || [],
+    receivedAt: new Date(),
+  });
+
+  if (event === 'hardBounce' || event === 'blocked') {
+    // flag the customer record — bad address, don't retry blindly
+    await User.updateOne({ email }, { emailDeliverable: false });
+  }
+
+  res.sendStatus(200); // always 200 quickly — Brevo retries on non-2xx
 });
 
 module.exports = router;

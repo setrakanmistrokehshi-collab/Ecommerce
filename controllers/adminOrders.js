@@ -4,11 +4,34 @@
 
 const Order  = require('../models/Order');
 const logger = require('../utils/logger');
+const { sendOrderConfirmation } = require('../services/orderEmails');
+const { sendOrderAlertToAdmin } = require('../services/orderAlerts');
 
 /**
  * GET /api/v1/admin/orders  OR  GET /api/v1/orders
  * Query: status, search, page, limit, sort
  */
+
+
+async function createOrder(req, res) {
+  const order = await Order.create(req.body);
+  const customer = await User.findById(order.userId);
+
+  // Fire both emails but never let email failure break the order response
+  Promise.allSettled([
+    sendOrderConfirmation(order, customer),
+    sendOrderAlertToAdmin(order, customer),
+  ]).then((results) => {
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.error(`Email ${i === 0 ? 'confirmation' : 'admin alert'} failed:`, r.reason);
+      }
+    });
+  });
+
+  res.status(201).json({ success: true, order });
+}
+
 async function getOrders(req, res) {
   try {
     const {
@@ -111,4 +134,4 @@ async function updateOrderStatus(req, res) {
   }
 }
 
-module.exports = { getOrders, getOrderById, updateOrderStatus };
+module.exports = { getOrders, getOrderById, updateOrderStatus, createOrder };
