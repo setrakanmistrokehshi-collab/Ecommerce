@@ -35,6 +35,7 @@ const userRoutes = require("./routes/users");
 const adminRoutes = require("./routes/admin");
 const categoryRoutes = require("./routes/categories");
 const settingRoutes = require("./routes/admin")
+const googleAuthRoutes = require("./routes/googleAuth.route");
 const { cacheGet, cacheSet, getRedisClient } = require('./config/redis');
 
 
@@ -48,7 +49,8 @@ const {
   globalLimiter,
   authLimiter,
   webhookLimiter,
-  adminLoginLimiter
+  adminLoginLimiter,
+  googleLimiter
 } = require("./middleware/rateLimiter");
 const logger = require("./utils/logger");
  
@@ -84,7 +86,7 @@ app.use(
 );
 
 // ── CORS ──────────────────────────────────────────────────────────
-const rawOrigins = process.env.ALLOWED_ORIGINS;
+const rawOrigins = process.env.ALLOWED_ORIGINS &&  process.env.FRONTEND_URL,
 if (!rawOrigins && process.env.NODE_ENV === "production") {
   throw new Error("ALLOWED_ORIGINS must be set in production");
 }
@@ -94,6 +96,7 @@ const allowedOrigins = [
   "https://localhost",     // Capacitor Android
   "capacitor://localhost", // Capacitor iOS / newer Android
   "http://localhost",
+  
 ];
 
 app.use(
@@ -207,7 +210,7 @@ app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/settings", settingRoutes);
 app.use("/api/v1/webhooks", webhookRoutes);
 app.use("/api/v1/categories", categoryRoutes);
-app.use('/api/v1/auth', require('./routes/authGoogleRoutes'));
+ app.use("/api/v1/auth", googleAuthRoutes);
 // ── API 404 ───────────────────────────────────────────────────────
 app.use("/api", (req, res) => {
   res

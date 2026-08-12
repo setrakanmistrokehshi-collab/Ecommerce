@@ -14,9 +14,10 @@ const { AppError }   = require('../middleware/errorHandler');
 const { protect, blockToken, restrictTo } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { STAFF_ROLES } = require('../config/permission');
-const { adminLoginLimiter } = require('../middleware/rateLimiter');
+const { adminLoginLimiter, googleAuthLimiter } = require('../middleware/rateLimiter');
 const { sendLoginAlert } = require('../utils/email');
 const { verifyPassword } = require('../utils/password');
+const { verifyGoogleCredential } = require('../config/googleClient'); // NEW
 
 const router = express.Router();
 
@@ -180,6 +181,10 @@ const resetPasswordRules = [
   body('token').notEmpty().withMessage('Reset token is required'),
 ];
 
+const googleAuthRules = [
+  body('credential').notEmpty().withMessage('Google credential is required'),
+];
+
 function validate(req, res, next) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -295,6 +300,86 @@ router.post('/login', useragent.express(), loginRules, validate, async (req, res
     logger.info(`✅ Login successful: ${email} [IP: ${req.ip}]`);
     return sendTokenResponse(user, req, res, 200);
     
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GOOGLE LOGIN (Google Identity Services) ───────────────────────
+// Frontend sends the GIS ID token as { credential }. We verify it with
+// Google, find-or-create the user, then issue tokens through the SAME
+// sendTokenResponse()/signAccessToken()/signRefreshToken() path as
+// every other login route — so tokenVersion, the refresh-token DB
+// record, logout-all, and the `protect` middleware all work identically
+// for Google-authenticated users. No parallel session mechanism.
+router.post('/google', useragent.express(), googleAuthLimiter, googleAuthRules, validate, async (req, res, next) => {
+  try {
+    const { credential } = req.body;
+
+    let payload;
+    try {
+      payload = await verifyGoogleCredential(credential);
+    } catch (err) {
+      logger.warn(`Google credential verification failed [IP: ${req.ip}]: ${err.message}`);
+      return next(new AppError('Google sign-in failed. Please try again.', 401));
+    }
+
+    const { sub: googleId, email, name, picture } = payload;
+
+    let user = await User.findOne({ email }).select(
+      '+tokenVersion +role +permissions'
+    );
+
+    if (!user) {
+      user = await User.create({
+        name,
+        email,
+        googleId,
+        authProvider: 'google',
+        avatar: picture,
+        isEmailVerified: true, // Google already verified this address
+        isActive: true,
+        // password intentionally omitted — schema must allow this
+        // for authProvider !== 'local' accounts
+      });
+      logger.info(`New user via Google: ${email} [IP: ${req.ip}]`);
+    } else {
+      if (!user.isActive) {
+        return next(new AppError('Account has been disabled', 403));
+      }
+      if (user.lockUntil && user.lockUntil > Date.now()) {
+        return next(new AppError('Account temporarily locked. Try again later.', 423));
+      }
+      if (!user.googleId) {
+        // Existing password account linking Google for the first time
+        user.googleId = googleId;
+        if (!user.isEmailVerified) user.isEmailVerified = true;
+        await user.save({ validateBeforeSave: false });
+      }
+    }
+
+    await User.findByIdAndUpdate(user._id, {
+      $set: { lastLogin: new Date(), lastLoginIp: req.ip },
+      $unset: { lockUntil: 1, loginAttempts: 1 },
+    });
+
+    // Same best-effort login alert as /login — don't block on failure
+    try {
+      const ua = req.useragent;
+      await sendLoginAlert(user.email, user.name, {
+        browser: ua?.browser || 'Unknown Browser',
+        os: ua?.os || 'Unknown OS',
+        device: ua?.platform || 'Unknown Device',
+        ip: req.ip || req.connection.remoteAddress,
+        location: req.geolocation?.city || 'Unknown Location',
+        time: new Date().toLocaleString(),
+      });
+    } catch (emailErr) {
+      logger.warn('⚠️ Login alert email failed:', emailErr.message);
+    }
+
+    logger.info(`✅ Google login successful: ${email} [IP: ${req.ip}]`);
+    return sendTokenResponse(user, req, res, 200);
   } catch (err) {
     next(err);
   }
@@ -439,7 +524,6 @@ router.post('/reset-password', resetPasswordRules, validate, async (req, res, ne
 });
 
 // ── CHANGE PASSWORD (Admin) ──────────────────────────────────────
-// ✅ FIXED: Using PUT instead of POST, and restrictTo allows both admin and super_admin
 router.put('/admin/settings/password', 
   protect, 
    restrictTo('super_admin', 'product_manager', 'order_manager', 'support_agent'),
