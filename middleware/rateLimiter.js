@@ -60,6 +60,18 @@ const authLimiter = createLimiter({
   skipSuccessfulRequests: true,
 });
 
+//google limiter
+const googleAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 20,                  // 20 attempts per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many sign-in attempts. Please try again shortly.',
+  },
+});
+
 /** Payment endpoint limiter */
 const paymentLimiter = createLimiter({
   windowMs: 60 * 1000,
@@ -102,6 +114,7 @@ const adminLoginLimiter = createLimiter({
 module.exports = {
   globalLimiter,
   authLimiter,
+  googleAuthLimiter,
   paymentLimiter,
   reviewLimiter,
   webhookLimiter,
