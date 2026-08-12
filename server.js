@@ -17,7 +17,6 @@ const express = require("express");
 const mongoose = require("mongoose");
 const helmet = require("helmet");
 const cors = require("cors");
-const passport = require("passport");
 const compression = require("compression");
 const morgan = require("morgan");
 const path = require("path");
@@ -34,7 +33,7 @@ const webhookRoutes = require("./routes/webhooks");
 const userRoutes = require("./routes/users");
 const adminRoutes = require("./routes/admin");
 const categoryRoutes = require("./routes/categories");
-const settingRoutes = require("./routes/admin")
+const settingRoutes = require("./routes/admin");
 const googleAuthRoutes = require("./routes/googleAuth.route");
 const { cacheGet, cacheSet, getRedisClient } = require('./config/redis');
 
@@ -82,21 +81,21 @@ app.use(
     hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
     referrerPolicy: { policy: "strict-origin-when-cross-origin" },
     permissionsPolicy: { features: { geolocation: ["'none'"] } },
-  }),
-);
+  })
+); 
+// CORS Configuration
+const rawOrigins = process.env.ALLOWED_ORIGINS && process.env.FRONTEND_URL;
 
-// ── CORS ──────────────────────────────────────────────────────────
-const rawOrigins = process.env.ALLOWED_ORIGINS &&  process.env.FRONTEND_URL,
 if (!rawOrigins && process.env.NODE_ENV === "production") {
   throw new Error("ALLOWED_ORIGINS must be set in production");
 }
+
 const allowedOrigins = [
   ...(rawOrigins ? rawOrigins.split(",").map((o) => o.trim()).filter(Boolean) : []),
   "http://localhost:5173",
-  "https://localhost",     // Capacitor Android
-  "capacitor://localhost", // Capacitor iOS / newer Android
+  "https://localhost",
+  "capacitor://localhost",
   "http://localhost",
-  
 ];
 
 app.use(
@@ -122,7 +121,6 @@ app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(cookieParser());
 
-app.use(passport.initialize());
 
 // FIX: hpp after body parsers so it can actually inspect req.body
 app.use(hpp());
@@ -210,7 +208,7 @@ app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/settings", settingRoutes);
 app.use("/api/v1/webhooks", webhookRoutes);
 app.use("/api/v1/categories", categoryRoutes);
- app.use("/api/v1/auth", googleAuthRoutes);
+ app.use("/api/v1/auth", googleAuthRoutes)
 // ── API 404 ───────────────────────────────────────────────────────
 app.use("/api", (req, res) => {
   res
