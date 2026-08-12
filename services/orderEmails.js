@@ -1,4 +1,4 @@
-const { sendTransactionalEmail } = require('./brevoService');
+const { sendTransactionalEmail } = require("../services/brevoService");
 
 // Order confirmation to the customer — replace templateId with the ID
 // from your Brevo dashboard (Templates page, number after "#").

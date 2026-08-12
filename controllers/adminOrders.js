@@ -3,6 +3,7 @@
 // Powers admin order management routes.
 
 const Order  = require('../models/Order');
+const User   = require('../models/User');
 const logger = require('../utils/logger');
 const { sendOrderConfirmation } = require('../services/orderEmails');
 const { sendOrderAlertToAdmin } = require('../services/orderAlerts');

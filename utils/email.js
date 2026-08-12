@@ -559,7 +559,7 @@
 //   const brevo = getBrevoClient();
 //   if (brevo) {
 //     try {
-//       const apiInstance = new brevo.TransactionalEmailsApi();
+//  const apiInstance = new brevo.TransactionalEmailsApi();
 // await apiInstance.sendTransacEmail({
 //         sender: { name: senderName, email: senderEmail },
 //         to: [{ email: to }],
