@@ -272,7 +272,7 @@ router.post('/login', useragent.express(), loginRules, validate, async (req, res
     // ✅ ONLY AFTER successful login - update user
     await User.findByIdAndUpdate(user._id, {
       $set: { loginAttempts: 0, lastLogin: new Date(), lastLoginIp: req.ip },
-      $unset: { lockUntil: 1 }
+      $unset: { lockUntil: { $gte: Date.now() + 10 * 60 * 1000 } }
     });
 
     // ✅ Send login alert email (only for successful logins)
@@ -306,12 +306,7 @@ router.post('/login', useragent.express(), loginRules, validate, async (req, res
 });
 
 // ── GOOGLE LOGIN (Google Identity Services) ───────────────────────
-// Frontend sends the GIS ID token as { credential }. We verify it with
-// Google, find-or-create the user, then issue tokens through the SAME
-// sendTokenResponse()/signAccessToken()/signRefreshToken() path as
-// every other login route — so tokenVersion, the refresh-token DB
-// record, logout-all, and the `protect` middleware all work identically
-// for Google-authenticated users. No parallel session mechanism.
+
 router.post('/google', useragent.express(), googleAuthLimiter, googleAuthRules, validate, async (req, res, next) => {
   try {
     const { credential } = req.body;
@@ -337,10 +332,9 @@ router.post('/google', useragent.express(), googleAuthLimiter, googleAuthRules, 
         googleId,
         authProvider: 'google',
         avatar: picture,
-        isEmailVerified: true, // Google already verified this address
+        isEmailVerified: true, 
         isActive: true,
-        // password intentionally omitted — schema must allow this
-        // for authProvider !== 'local' accounts
+      
       });
       logger.info(`New user via Google: ${email} [IP: ${req.ip}]`);
     } else {
@@ -360,7 +354,7 @@ router.post('/google', useragent.express(), googleAuthLimiter, googleAuthRules, 
 
     await User.findByIdAndUpdate(user._id, {
       $set: { lastLogin: new Date(), lastLoginIp: req.ip },
-      $unset: { lockUntil: 1, loginAttempts: 1 },
+      $unset: { lockUntil: { $gte: Date.now() + 10 * 60 * 1000 }, loginAttempts: 3 },
     });
 
     // Same best-effort login alert as /login — don't block on failure
@@ -416,7 +410,7 @@ router.post('/admin-login', useragent.express(), adminLoginLimiter, loginRules, 
 
     await User.findByIdAndUpdate(user._id, {
       $set: { loginAttempts: 0, lastLogin: new Date(), lastLoginIp: req.ip },
-      $unset: { lockUntil: 1 },
+      $unset: { lockUntil: { $gte: Date.now() + 10 * 60 * 1000 } },
     });
 
     user.tokenVersion = user.tokenVersion || 0;
