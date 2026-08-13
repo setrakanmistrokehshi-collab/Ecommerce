@@ -43,7 +43,7 @@ async function sendShippingUpdate(order, customer, trackingCode) {
 async function sendPasswordReset(user, resetLink) {
   return sendTransactionalEmail({
     to: { email: user.email, name: user.name },
-    subject: 'Reset your VitaCore password',
+    subject: 'Reset your Winners-health password',
     htmlContent: `
       <p>Hi ${user.name},</p>
       <p>Click below to reset your password. This link expires in 30 minutes.</p>
