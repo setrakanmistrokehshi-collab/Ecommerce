@@ -320,7 +320,7 @@ router.post('/google', useragent.express(), googleAuthLimiter, googleAuthRules, 
       return next(new AppError('Google sign-in failed. Please try again.', 401));
     }
 
-    const { sub: googleId, email, name, picture } = payload;
+    const { sub: googleId, email, name, avatarUrl} = payload;
 
     let user = await User.findOne({ email }).select(
       '+tokenVersion +role +permissions'
@@ -332,7 +332,7 @@ router.post('/google', useragent.express(), googleAuthLimiter, googleAuthRules, 
         email,
         googleId,
         authProvider: 'google',
-        avatar: picture,
+        avatar: 'avatarUrl',
         isEmailVerified: true, 
         isActive: true,
       
@@ -442,7 +442,7 @@ router.get('/verify-email/:token', async (req, res, next) => {
     user.emailVerificationExpires = undefined;
     await user.save({ validateBeforeSave: false });
 
-    res.redirect(`${process.env.BASE_URL}/?verified=true`);
+    res.redirect(`${process.env.CLIENT_URL}/?verified=true`);
   } catch (err) {
     next(err);
   }
@@ -462,7 +462,7 @@ router.post('/forgot-password', async (req, res, next) => {
     user.passwordResetExpires = Date.now() + 10 * 60 * 1000;
     await user.save({ validateBeforeSave: false });
 
-    const resetUrl = `${process.env.BASE_URL}/reset-password?token=${resetToken}`;
+    const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
 
     await sendEmail({
       to: user.email,

@@ -393,7 +393,7 @@ function buildTemplate(template, data) {
         <p><strong>Delivering to:</strong><br>${data.shippingAddress?.street}, ${data.shippingAddress?.city}, ${data.shippingAddress?.state}</p>
         <p>Expected delivery: <strong>3–5 business days</strong></p>
         <div style="text-align: center;">
-          <a href="${process.env.BASE_URL || 'https://winnershealth.com'}/orders/${data.orderNumber}" class="btn">Track My Order</a>
+          <a href="${process.env.BASE_URL}/orders/${data.orderNumber}" class="btn">Track My Order</a>
         </div>
       `);
 
@@ -412,7 +412,7 @@ function buildTemplate(template, data) {
       return base(`
         <h1>🔐 Password Changed</h1>
         <p>Hi ${data.name}, your Winners Health account password was successfully changed.</p>
-        <p>If you did not make this change, <a href="${process.env.BASE_URL || 'https://winnershealth.com'}/contact" style="color:#2d6a4f;">contact our support team immediately</a>.</p>
+        <p>If you did not make this change, <a href="${process.env.BASE_URL}/contact" style="color:#2d6a4f;">contact our support team immediately</a>.</p>
       `);
 
     case 'orderShipped':
@@ -548,11 +548,7 @@ function buildTemplate(template, data) {
 }
 
 // ── SEND EMAIL WITH PROVIDER ──────────────────────────────────
-// FIXED: Brevo client is used directly via its `.transactionalEmails`
-// namespace (current SDK) instead of the old `new brevo.TransactionalEmailsApi()`
-// pattern, which doesn't exist on a BrevoClient instance and threw before
-// anything could send. `result` is now captured from the actual send call
-// instead of referencing an undefined variable.
+
 async function sendEmailWithProvider({ to, subject, html, priority, data }) {
   const senderEmail = process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL;
   const senderName = process.env.EMAIL_FROM_NAME || process.env.SENDER_NAME || 'Winners Health';
