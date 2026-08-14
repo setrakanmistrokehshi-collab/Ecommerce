@@ -393,7 +393,7 @@ function buildTemplate(template, data) {
         <p><strong>Delivering to:</strong><br>${data.shippingAddress?.street}, ${data.shippingAddress?.city}, ${data.shippingAddress?.state}</p>
         <p>Expected delivery: <strong>3–5 business days</strong></p>
         <div style="text-align: center;">
-          <a href="${process.env.BASE_URL}/orders/${data.orderNumber}" class="btn">Track My Order</a>
+          <a href="${process.env.CLIENT_URL}/orders/${data.orderNumber}" class="btn">Track My Order</a>
         </div>
       `);
 
@@ -412,7 +412,7 @@ function buildTemplate(template, data) {
       return base(`
         <h1>🔐 Password Changed</h1>
         <p>Hi ${data.name}, your Winners Health account password was successfully changed.</p>
-        <p>If you did not make this change, <a href="${process.env.BASE_URL}/contact" style="color:#2d6a4f;">contact our support team immediately</a>.</p>
+        <p>If you did not make this change, <a href="${process.env.CLIENT_URL}/contact" style="color:#2d6a4f;">contact our support team immediately</a>.</p>
       `);
 
     case 'orderShipped':
@@ -505,7 +505,7 @@ function buildTemplate(template, data) {
           </ul>
         </div>
         <div style="text-align: center;">
-          <a href="${process.env.BASE_URL}/reset-password" class="btn">Change Password Now</a>
+          <a href="${process.env.CLIENT_URL}/reset-password" class="btn">Change Password Now</a>
         </div>
         <hr class="divider">
         <p style="font-size:13px;color:#8a8a8a;">If this was you, you can ignore this email and your account will remain secure.</p>
