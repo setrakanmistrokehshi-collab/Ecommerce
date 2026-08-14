@@ -214,7 +214,6 @@ router.post('/register', registerRules, validate, async (req, res, next) => {
     });
 
     const verifyUrl = `${process.env.BASE_URL}/api/v1/auth/verify-email/${verificationToken}`;
-
     await sendEmail({
       to:       email,
       subject:  'Verify your email',
@@ -254,7 +253,9 @@ router.post('/login', useragent.express(), loginRules, validate, async (req, res
     if (isAdminLogin) {
       const ADMIN_MAX_ATTEMPTS = 3;
       if (user.loginAttempts >= ADMIN_MAX_ATTEMPTS) {
+        
         return next(new AppError('Admin account locked due to suspicious activity', 423));
+        
       }
     }
 
@@ -393,7 +394,7 @@ router.post('/admin-login', useragent.express(), adminLoginLimiter, loginRules, 
       return next(new AppError('Invalid credentials', 401));
     }
  
-    if (user.isLocked) return next(new AppError('Account temporarily locked. Try again later.', 423));
+    
     if (!user.isActive) return next(new AppError('Account has been disabled. Contact support.', 403));
 
     const isMatch = await user.comparePassword(password);
