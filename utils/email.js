@@ -32,36 +32,36 @@ const config = {
 };
 
 // ── PROVIDER SETUP ──────────────────────────────────────────────
-let brevoClient;
+let brevoClientInstance;
 let sendgridConfigured = false;
 
 function getBrevoClient() {
-  if (brevoClient) return brevoClient;
-  
+  if (brevoClientInstance) return brevoClientInstance;
+
   if (!process.env.BREVO_API_KEY) {
     logger.warn('⚠️ BREVO_API_KEY not set');
     return null;
   }
 
-  brevoClient = new BrevoClient({
+  brevoClientInstance = new BrevoClient({
     apiKey: process.env.BREVO_API_KEY,
     timeoutInSeconds: 30,
     maxRetries: 2,
   });
 
-  return brevoClient;
+  return brevoClientInstance;
 }
 
 function getSendGridClient() {
   if (sendgridConfigured) return sgMail;
-  
+
   if (process.env.SENDGRID_API_KEY) {
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
     sendgridConfigured = true;
     logger.info('✅ SendGrid configured');
     return sgMail;
   }
-  
+
   logger.warn('⚠️ SENDGRID_API_KEY not set');
   return null;
 }
@@ -98,11 +98,11 @@ function resetDailyCounter() {
 
 function canSendEmail(priority = config.PRIORITY.NORMAL) {
   resetDailyCounter();
-  
+
   const totalLimit = config.DAILY_LIMITS.TOTAL;
   const criticalReserve = config.DAILY_LIMITS.CRITICAL_RESERVE;
   const available = totalLimit - emailCount.sentToday;
-  
+
   // Critical emails always get through
   if (priority === config.PRIORITY.CRITICAL) {
     if (emailCount.sentToday >= totalLimit) {
@@ -111,16 +111,16 @@ function canSendEmail(priority = config.PRIORITY.NORMAL) {
     }
     return true;
   }
-  
+
   // Reserve capacity for critical emails
   const reserveLeft = criticalReserve - emailCount.criticalUsed;
   const effectiveAvailable = available - reserveLeft;
-  
+
   if (effectiveAvailable <= 0) {
     logger.warn(`⏭️ Skipping email - daily limit reached (${emailCount.sentToday}/${totalLimit})`);
     return false;
   }
-  
+
   return true;
 }
 
@@ -132,7 +132,7 @@ function isOffPeakHours() {
 // ── QUEUE SYSTEM ──────────────────────────────────────────────────
 function queueEmail({ to, subject, html, priority, data }) {
   const queueItem = { to, subject, html, priority, data, timestamp: Date.now() };
-  
+
   if (priority <= config.PRIORITY.IMPORTANT) {
     emailQueue.high.push(queueItem);
   } else if (priority === config.PRIORITY.NORMAL) {
@@ -140,9 +140,9 @@ function queueEmail({ to, subject, html, priority, data }) {
   } else {
     emailQueue.low.push(queueItem);
   }
-  
+
   logger.info(`📦 Email queued (priority ${priority}): ${subject}`);
-  
+
   if (!emailQueue.isProcessing) {
     processQueue();
   }
@@ -150,21 +150,21 @@ function queueEmail({ to, subject, html, priority, data }) {
 
 async function processQueue() {
   if (emailQueue.isProcessing) return;
-  
+
   emailQueue.isProcessing = true;
-  
+
   try {
     const allQueued = [...emailQueue.high, ...emailQueue.normal, ...emailQueue.low];
-    
+
     if (allQueued.length === 0) {
       emailQueue.isProcessing = false;
       return;
     }
-    
+
     const isOffPeak = isOffPeakHours();
     const batchSize = isOffPeak ? config.OFF_PEAK.BATCH_SIZE : 5;
     const toSend = allQueued.slice(0, batchSize);
-    
+
     for (const item of toSend) {
       try {
         if (canSendEmail(item.priority)) {
@@ -177,7 +177,7 @@ async function processQueue() {
         logger.error(`❌ Queue send failed: ${error.message}`);
       }
     }
-    
+
     if (allQueued.length > 0) {
       setTimeout(processQueue, 5000);
     } else {
@@ -191,14 +191,14 @@ async function processQueue() {
 
 function removeFromQueue(item) {
   const removeItem = (queue) => {
-    const index = queue.findIndex(q => 
-      q.to === item.to && 
-      q.subject === item.subject && 
+    const index = queue.findIndex(q =>
+      q.to === item.to &&
+      q.subject === item.subject &&
       q.timestamp === item.timestamp
     );
     if (index > -1) queue.splice(index, 1);
   };
-  
+
   removeItem(emailQueue.high);
   removeItem(emailQueue.normal);
   removeItem(emailQueue.low);
@@ -213,12 +213,12 @@ function getDeviceHash(userAgent, ip) {
 function isKnownDevice(userId, deviceHash) {
   const key = `device-${userId}`;
   if (!deviceCache.has(key)) return false;
-  
+
   const devices = deviceCache.get(key);
   const device = devices.find(d => d.hash === deviceHash);
-  
+
   if (!device) return false;
-  
+
   const ttl = config.LOGIN_ALERT.KNOWN_DEVICES_TTL * 24 * 3600 * 1000;
   return (Date.now() - device.lastSeen) < ttl;
 }
@@ -228,10 +228,10 @@ function addKnownDevice(userId, deviceHash, deviceInfo) {
   if (!deviceCache.has(key)) {
     deviceCache.set(key, []);
   }
-  
+
   const devices = deviceCache.get(key);
   const existing = devices.find(d => d.hash === deviceHash);
-  
+
   if (existing) {
     existing.lastSeen = Date.now();
   } else {
@@ -242,7 +242,7 @@ function addKnownDevice(userId, deviceHash, deviceInfo) {
       lastSeen: Date.now(),
     });
   }
-  
+
   deviceCache.set(key, devices);
 }
 
@@ -250,28 +250,28 @@ function addKnownDevice(userId, deviceHash, deviceInfo) {
 function shouldSendLoginAlert(userId, ip, userAgent) {
   const deviceDetector = new DeviceDetector();
   const deviceInfo = deviceDetector.parse(userAgent);
-  
+
   const geo = geoip.lookup(ip);
   const location = geo ? `${geo.city}, ${geo.country}` : 'Unknown';
-  
+
   const deviceHash = getDeviceHash(userAgent, ip);
   const isKnown = isKnownDevice(userId, deviceHash);
-  
+
   if (isKnown) {
     logger.info(`📱 Known device for user ${userId} - skipping login alert`);
     return { send: false, reason: 'Known device', deviceHash, location };
   }
-  
+
   // Cooldown check
   const alertKey = `alert-${userId}`;
   const lastAlert = loginAlertCache.get(alertKey);
   const cooldown = config.LOGIN_ALERT.MIN_TIME_BETWEEN * 1000;
-  
+
   if (lastAlert && (Date.now() - lastAlert) < cooldown) {
     logger.info(`⏰ Cooldown active for user ${userId} - skipping login alert`);
     return { send: false, reason: 'Cooldown active', deviceHash, location };
   }
-  
+
   // Batch accumulation
   const batchKey = `batch-${userId}`;
   if (!loginAlertCache.has(batchKey)) {
@@ -280,35 +280,35 @@ function shouldSendLoginAlert(userId, ip, userAgent) {
       firstSeen: Date.now(),
     });
   }
-  
+
   const batch = loginAlertCache.get(batchKey);
-  batch.logins.push({ 
-    ip, 
-    userAgent, 
-    deviceInfo, 
-    location, 
-    time: Date.now() 
+  batch.logins.push({
+    ip,
+    userAgent,
+    deviceInfo,
+    location,
+    time: Date.now()
   });
-  
+
   const shouldBatch = batch.logins.length >= config.LOGIN_ALERT.BATCH_SIZE ||
                      (Date.now() - batch.firstSeen) > 3600000;
-  
+
   if (shouldBatch) {
     loginAlertCache.delete(batchKey);
-    return { 
-      send: true, 
-      reason: 'Batch ready', 
-      deviceHash, 
+    return {
+      send: true,
+      reason: 'Batch ready',
+      deviceHash,
       location,
       batch: batch.logins,
       isBatch: true,
     };
   }
-  
-  return { 
-    send: false, 
-    reason: 'Batching logins', 
-    deviceHash, 
+
+  return {
+    send: false,
+    reason: 'Batching logins',
+    deviceHash,
     location,
     batchCount: batch.logins.length,
   };
@@ -353,7 +353,7 @@ function buildTemplate(template, data) {
           <div class="content">${content}</div>
           <div class="footer">
             <p>© ${new Date().getFullYear()} Winners Health. All rights reserved.<br>
-            <a href="${process.env.BASE_URL }/unsubscribe">Unsubscribe</a></p>
+            <a href="${process.env.BASE_URL}/unsubscribe">Unsubscribe</a></p>
           </div>
         </div>
       </body>
@@ -422,7 +422,7 @@ function buildTemplate(template, data) {
         <p>Hi ${data.name}, your order <strong>#${data.orderNumber}</strong> has been dispatched.</p>
         <p>Tracking number: <strong>${data.trackingNumber || 'Will be updated shortly'}</strong></p>
         <div style="text-align: center;">
-          <a href="${process.env.BASE_URL }/orders/${data.orderNumber}" class="btn">Track My Order</a>
+          <a href="${process.env.BASE_URL}/orders/${data.orderNumber}" class="btn">Track My Order</a>
         </div>
       `);
 
@@ -505,13 +505,13 @@ function buildTemplate(template, data) {
           </ul>
         </div>
         <div style="text-align: center;">
-          <a href="${process.env.BASE_URL }/reset-password" class="btn">Change Password Now</a>
+          <a href="${process.env.BASE_URL}/reset-password" class="btn">Change Password Now</a>
         </div>
         <hr class="divider">
         <p style="font-size:13px;color:#8a8a8a;">If this was you, you can ignore this email and your account will remain secure.</p>
       `);
 
-    case 'batchedLoginAlert':
+    case 'batchedLoginAlert': {
       const loginItems = (data.logins || []).map((login, index) => `
         <div style="background: #f8f9fa; padding: 12px; margin: 10px 0; border-radius: 6px; border-left: 3px solid #2d7a3e;">
           <strong>Login #${index + 1}</strong><br>
@@ -537,6 +537,7 @@ function buildTemplate(template, data) {
         <hr class="divider">
         <p style="font-size:13px;color:#8a8a8a;">This is an automated security notification.</p>
       `);
+    }
 
     default:
       return base(`
@@ -547,6 +548,11 @@ function buildTemplate(template, data) {
 }
 
 // ── SEND EMAIL WITH PROVIDER ──────────────────────────────────
+// FIXED: Brevo client is used directly via its `.transactionalEmails`
+// namespace (current SDK) instead of the old `new brevo.TransactionalEmailsApi()`
+// pattern, which doesn't exist on a BrevoClient instance and threw before
+// anything could send. `result` is now captured from the actual send call
+// instead of referencing an undefined variable.
 async function sendEmailWithProvider({ to, subject, html, priority, data }) {
   const senderEmail = process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL;
   const senderName = process.env.EMAIL_FROM_NAME || process.env.SENDER_NAME || 'Winners Health';
@@ -556,23 +562,22 @@ async function sendEmailWithProvider({ to, subject, html, priority, data }) {
   }
 
   // Try Brevo first
-  const brevo = getBrevoClient();
-  if (brevo) {
+  const brevoClient = getBrevoClient();
+  if (brevoClient) {
     try {
- const apiInstance = new brevo.TransactionalEmailsApi();
-await apiInstance.sendTransacEmail({
+      const result = await brevoClient.transactionalEmails.sendTransacEmail({
         sender: { name: senderName, email: senderEmail },
         to: [{ email: to }],
         replyTo: { name: senderName, email: senderEmail },
         subject,
         htmlContent: html,
       });
-      
+
       emailCount.sentToday++;
       if (priority === config.PRIORITY.CRITICAL) {
         emailCount.criticalUsed++;
       }
-      
+
       logger.info(`✅ Email sent via Brevo (${emailCount.sentToday}/${config.DAILY_LIMITS.TOTAL}): ${subject} to ${to}`);
       return { success: true, provider: 'brevo', result };
     } catch (error) {
@@ -590,14 +595,14 @@ await apiInstance.sendTransacEmail({
         subject,
         html,
       };
-      
+
       const result = await sendgrid.send(msg);
-      
+
       emailCount.sentToday++;
       if (priority === config.PRIORITY.CRITICAL) {
         emailCount.criticalUsed++;
       }
-      
+
       logger.info(`✅ Email sent via SendGrid (${emailCount.sentToday}/${config.DAILY_LIMITS.TOTAL}): ${subject} to ${to}`);
       return { success: true, provider: 'sendgrid', result };
     } catch (error) {
@@ -612,7 +617,7 @@ await apiInstance.sendTransacEmail({
 // ── MAIN SEND FUNCTION ─────────────────────────────────────────
 async function sendEmail({ to, subject, template, data, html, priority = config.PRIORITY.NORMAL }) {
   resetDailyCounter();
-  
+
   // Build HTML if template provided
   let emailHtml = html;
   if (!emailHtml && template) {
@@ -624,9 +629,9 @@ async function sendEmail({ to, subject, template, data, html, priority = config.
   // Check if we can send now
   if (!canSendEmail(priority)) {
     queueEmail({ to, subject, html: emailHtml, priority, data });
-    return { 
-      success: true, 
-      queued: true, 
+    return {
+      success: true,
+      queued: true,
       message: `Email queued for later (${emailQueue.high.length + emailQueue.normal.length + emailQueue.low.length} in queue)`
     };
   }
@@ -637,7 +642,7 @@ async function sendEmail({ to, subject, template, data, html, priority = config.
 // ── SMART LOGIN ALERT ──────────────────────────────────────────
 async function sendLoginAlert(userId, email, name, ip, userAgent, loginData = {}) {
   const analysis = shouldSendLoginAlert(userId, ip, userAgent);
-  
+
   if (!analysis.send) {
     if (analysis.deviceHash) {
       const deviceDetector = new DeviceDetector();
@@ -651,7 +656,7 @@ async function sendLoginAlert(userId, email, name, ip, userAgent, loginData = {}
     logger.info(`⏭️ Login alert skipped for ${email}: ${analysis.reason}`);
     return { sent: false, reason: analysis.reason };
   }
-  
+
   // Update known devices
   if (analysis.deviceHash) {
     const deviceDetector = new DeviceDetector();
@@ -662,14 +667,14 @@ async function sendLoginAlert(userId, email, name, ip, userAgent, loginData = {}
       lastSeen: Date.now(),
     });
   }
-  
+
   // Update alert cooldown
   loginAlertCache.set(`alert-${userId}`, Date.now());
-  
+
   // Build data for template
   const deviceDetector = new DeviceDetector();
   const deviceInfo = deviceDetector.parse(userAgent);
-  
+
   const templateData = {
     name,
     ip,
@@ -682,18 +687,18 @@ async function sendLoginAlert(userId, email, name, ip, userAgent, loginData = {}
     batchCount: analysis.batch?.length || 0,
     batchStart: analysis.batch?.[0]?.time ? new Date(analysis.batch[0].time).toLocaleString() : null,
   };
-  
+
   // If batch, use batched template
   const templateName = analysis.isBatch ? 'batchedLoginAlert' : 'loginAlert';
-  
+
   if (analysis.isBatch) {
     templateData.logins = analysis.batch;
   }
-  
-  const subject = analysis.isBatch 
+
+  const subject = analysis.isBatch
     ? `🔐 ${analysis.batch?.length || 0} New Logins to Your Account`
     : '🔐 New Login to Your Account';
-  
+
   return sendEmail({
     to: email,
     subject,
@@ -725,11 +730,11 @@ async function sendSuspiciousLoginAlert(email, name, loginData) {
 // ── TEST FUNCTION ──────────────────────────────────────────────
 async function testEmail() {
   const testEmailAddress = process.env.TEST_EMAIL || process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL;
-  
+
   if (!testEmailAddress) {
     throw new Error('TEST_EMAIL, EMAIL_FROM_ADDRESS, or SENDER_EMAIL must be set');
   }
-  
+
   logger.info('📧 Testing email configuration...');
   logger.info(`📧 Sender: ${process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL || 'Not set'}`);
   logger.info(`📧 Brevo API Key: ${process.env.BREVO_API_KEY ? '✅ Set' : '❌ Not set'}`);
