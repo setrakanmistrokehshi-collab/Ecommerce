@@ -213,7 +213,7 @@ router.post('/register', registerRules, validate, async (req, res, next) => {
       emailVerificationExpires: Date.now() + 24 * 60 * 60 * 1000,
     });
 
-    const verifyUrl = `${process.env.BASE_URL}/api/v1/auth/verify-email/${verificationToken}`;
+    const verifyUrl = `${process.env.CLIENT_URL}/api/v1/auth/verify-email/${verificationToken}`;
     await sendEmail({
       to:       email,
       subject:  'Verify your email',
