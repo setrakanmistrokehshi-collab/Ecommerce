@@ -347,7 +347,7 @@ function buildTemplate(template, data) {
       <body>
         <div class="container">
           <div class="header">
-            <h1>🌿 Winners Health</h1>
+            <h1> Winners Health</h1>
             <p>Your trusted partner in health and wellness</p>
           </div>
           <div class="content">${content}</div>
@@ -425,6 +425,34 @@ function buildTemplate(template, data) {
           <a href="${process.env.BASE_URL}/orders/${data.orderNumber}" class="btn">Track My Order</a>
         </div>
       `);
+
+
+
+    // ── NEW: payment amount didn't match the order 
+    case 'paymentRejected':
+      return base(`
+        <div class="badge badge-warning">⚠️ Payment Amount Mismatch</div>
+        <h1 style="margin-top:16px;">Your payment didn't go through as expected</h1>
+        <p>Hi ${data.name}, we received a bank transfer for order <strong>#${data.orderNumber}</strong>, but the amount didn't match the order total, so the payment could not be completed.</p>
+        <div class="alert-box alert-box-warning">
+          <strong style="color:#92400e;">What happens now:</strong>
+          <p style="margin: 8px 0 0;">The full amount you sent is being <strong>returned to the account you paid from</strong>. This is handled automatically — you don't need to do anything to get it back.</p>
+          <p style="margin: 8px 0 0;">Bank reversals like this can take anywhere from a few minutes up to 24 hours to reflect, depending on your bank. If it hasn't appeared after 24 hours, please contact us with your order number.</p>
+        </div>
+        ${data.expectedAmount ? `
+        <div class="order-item"><span>Order total</span><span>₦${Number(data.expectedAmount).toLocaleString()}</span></div>
+        ` : ''}
+        ${data.receivedAmount ? `
+        <div class="order-item"><span>Amount received</span><span>₦${Number(data.receivedAmount).toLocaleString()}</span></div>
+        ` : ''}
+        <hr class="divider">
+        <p>Your order is still saved and waiting — when you're ready, you can retry the payment for the exact order total below.</p>
+        <div style="text-align: center; padding: 15px 0;">
+          <a href="${process.env.CLIENT_URL}/orders/${data.orderNumber}" class="btn">Retry Payment</a>
+        </div>
+        <p style="font-size:13px;color:#8a8a8a;">Tip: when paying by bank transfer, send the exact amount shown at checkout — most banking apps let you copy the amount directly rather than typing it in.</p>
+      `);
+
 
     case 'loginAlert':
       return base(`
@@ -635,6 +663,24 @@ async function sendEmail({ to, subject, template, data, html, priority = config.
   return sendEmailWithProvider({ to, subject, html: emailHtml, priority, data });
 }
 
+// ── HELPER: send the payment-rejected notice ────────────────────
+// Called from the Monnify webhook handler's REJECTED_PAYMENT branch.
+async function sendPaymentRejectedEmail(order, { expectedAmount, receivedAmount } = {}) {
+  return sendEmail({
+    to: order.customerEmail,
+    subject: `Payment issue with order #${order.orderNumber}`,
+    template: 'paymentRejected',
+    data: {
+      name: order.customerName || 'there',
+      orderNumber: order.orderNumber,
+      expectedAmount, // Naira, decimal — pass verified.totalPayable or order.total/100
+      receivedAmount, // Naira, decimal — pass verified.amountPaid
+    },
+    priority: config.PRIORITY.CRITICAL,
+  });
+}
+
+
 // ── SMART LOGIN ALERT ──────────────────────────────────────────
 async function sendLoginAlert(userId, email, name, ip, userAgent, loginData = {}) {
   const analysis = shouldSendLoginAlert(userId, ip, userAgent);
@@ -764,8 +810,8 @@ function getEmailStats() {
 }
 
 // ── CRON JOBS ──────────────────────────────────────────────────
-// Process queue every 20 minutes
-cron.schedule('*/20 * * * *', () => {
+// Process queue every 60 minutes
+cron.schedule('*/60 * * * *', () => {
   logger.info('🔄 Running scheduled queue processing...');
   if (!emailQueue.isProcessing) {
     processQueue();
@@ -793,6 +839,7 @@ module.exports = {
   testEmail,
   sendLoginAlert,
   sendSuspiciousLoginAlert,
+  sendPaymentRejectedEmail,
   getEmailStats,
   config,
   PRIORITY: config.PRIORITY,

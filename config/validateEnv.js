@@ -9,11 +9,6 @@ function validateEnv() {
     'MONGODB_URI',
     'JWT_SECRET',
     'JWT_REFRESH_SECRET',
-    //'NOMBA_CLIENT_ID',
-    //'NOMBA_WEBHOOK_SECRET',
-    //'NOMBA_ACCOUNT_ID',
-    //'NOMBA_BASE_URL',
-    //'EMAIL_HOST',
     'EMAIL_USER',
     'EMAIL_PASS',
     'EMAIL_FROM_ADDRESS',
@@ -23,7 +18,7 @@ function validateEnv() {
   ];
 
   const PROD_REQUIRED = [
-    'NOMBA_WEBHOOK_SECRET',
+    
   ];
 
   const missing = REQUIRED.filter((key) => !process.env[key]);

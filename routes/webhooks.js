@@ -1,358 +1,595 @@
 'use strict';
 
 const express = require('express');
+const axios = require('axios');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const cron = require('node-cron');
 const { Redis } = require('ioredis');
 
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const { processSuccessfulPayment } = require('./payments'); // same folder
+const { sendPaymentRejectedEmail } = require("../utils/email"); // adjust path if this lives elsewhere
 const logger = require('../utils/logger');
 
 // ── Redis client ──────────────────────────────────────────────────
-// Reuse an existing client if you have one, or initialise here.
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+ 
+  maxRetriesPerRequest: 2,
+  enableOfflineQueue: false, // reject immediately instead of buffering while disconnected
+  retryStrategy(times) {
+    return Math.min(times * 200, 5000); // capped backoff, keeps retrying in the background
+  },
+});
+
+redis.on('error', (err) => {
+  logger.error('❌ Redis connection error', { error: err.message });
+});
+
+redis.on('ready', () => {
+  logger.info('✅ Redis connected');
+});
 
 const router = express.Router();
 
-// ── CONFIGURATION ──────────────────────────────────────────────────
-// Signature bypass is ONLY allowed in development with an explicit flag.
-// Production never bypasses, regardless of environment variables.
-const DEV_BYPASS_ENABLED =
-  process.env.NODE_ENV === 'development' &&
-  process.env.ALLOW_UNSIGNED_WEBHOOKS === 'true';
+// ── CONFIGURATION ────────────────────────────────────────────────
+// NOTE: base URL differs by environment — this was wrong in the snippet
+// you had ("https://monnify.com"). Sandbox and live are separate hosts.
+const MONNIFY_BASE_URL =
+  process.env.MONNIFY_BASE_URL ||
+  (process.env.NODE_ENV === 'production'
+    ? 'https://api.monnify.com'
+    : 'https://sandbox.monnify.com');
 
-// ── SIGNATURE VERIFICATION ────────────────────────────────────────
-function verifyNombaSignature(rawBody, signature) {
-  // If secret is missing, reject unless dev bypass is on
-  if (!process.env.NOMBA_WEBHOOK_SECRET) {
-    if (DEV_BYPASS_ENABLED) {
-      logger.warn('⚠️  NOMBA_WEBHOOK_SECRET not set — dev bypass accepting unsigned webhook');
-      return true;
-    }
-    logger.error('❌ NOMBA_WEBHOOK_SECRET not set — rejecting webhook');
-    return false;
+const MONNIFY_API_KEY = process.env.MONNIFY_API_KEY;
+const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
+const MONNIFY_CONTRACT_CODE = process.env.MONNIFY_CONTRACT_CODE;
+
+// Monnify's documented webhook source IP. Whitelisting this is one of
+// their own recommended practices, alongside signature verification.
+const MONNIFY_WEBHOOK_IP = process.env.MONNIFY_WEBHOOK_IP || '35.242.133.146';
+
+const ENFORCE_SIGNATURE = process.env.NODE_ENV === 'production';
+const ENFORCE_IP_WHITELIST = process.env.MONNIFY_ENFORCE_IP_WHITELIST !== 'false';
+
+// ── ACCESS TOKEN (cached — tokens are valid ~1hr, don't re-auth every call) ─
+let cachedToken = null;
+let cachedTokenExpiry = 0;
+
+async function getMonnifyAccessToken() {
+  if (cachedToken && Date.now() < cachedTokenExpiry) {
+    return cachedToken;
   }
 
-  if (!signature || typeof signature !== 'string') return false;
+  try {
+    const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString('base64');
+    const response = await axios.post(
+      `${MONNIFY_BASE_URL}/api/v1/auth/login`,
+      {},
+      { headers: { Authorization: `Basic ${credentials}` }, timeout: 15000 }
+    );
 
-  // Raw body MUST be a Buffer – this ensures express.raw() is mounted correctly
+    const { accessToken, expiresIn } = response.data.responseBody;
+    cachedToken = accessToken;
+    // Refresh a little early (90s buffer) rather than exactly on expiry.
+    cachedTokenExpiry = Date.now() + (Math.max(expiresIn - 90, 30) * 1000);
+    return cachedToken;
+  } catch (error) {
+    logger.error('❌ Failed to fetch Monnify access token', { error: error.message });
+    cachedToken = null;
+    cachedTokenExpiry = 0;
+    return null;
+  }
+}
+
+// ── SIGNATURE VERIFICATION ──────────────────────────────────────
+
+function verifyMonnifySignature(rawBody, signature) {
+  if (!signature || typeof signature !== 'string') return false;
+  if (!MONNIFY_SECRET_KEY) {
+    logger.error('❌ MONNIFY_SECRET_KEY not set — cannot verify webhook signature');
+    return false;
+  }
   if (!Buffer.isBuffer(rawBody)) {
     logger.error(
-      'Webhook raw body is not a Buffer – ensure express.raw({ type: "application/json" }) is mounted BEFORE any global express.json() middleware on this route.'
+      'Webhook raw body is not a Buffer – ensure express.raw({ type: "application/json" }) is mounted on this route BEFORE any global express.json() middleware.'
     );
     return false;
   }
 
-  // Compute expected HMAC-SHA512 signature
+  const bodyString = rawBody.toString('utf8');
   const expected = crypto
-    .createHmac('sha512', process.env.NOMBA_WEBHOOK_SECRET)
-    .update(rawBody)
+    .createHash('sha512')
+    .update(MONNIFY_SECRET_KEY + bodyString)
     .digest('hex');
 
-  // Validate shape before timingSafeEqual (prevents length mismatch errors)
   if (!/^[a-f0-9]{128}$/i.test(signature)) return false;
 
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(expected, 'hex'),
-      Buffer.from(signature, 'hex')
-    );
+    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
   } catch {
     return false;
   }
 }
 
-// ── REDIS LOCK HELPERS ────────────────────────────────────────────
+function isFromMonnifyIp(req) {
+
+  const ip = (req.ip || '').replace('::ffff:', '');
+  return ip === MONNIFY_WEBHOOK_IP;
+}
+
+// ── REDIS LOCK / IDEMPOTENCY HELPERS ────────────────────────────
+// All four fail SAFE if Redis is unreachable rather than throwing
+// uncaught and killing webhook processing:
 async function acquireLock(key, ttlSeconds = 30) {
-  const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
-  return result === 'OK';
+  try {
+    const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
+    return result === 'OK';
+  } catch (err) {
+    logger.error(`⚠️ Redis acquireLock failed for ${key} — proceeding without lock`, {
+      error: err.message,
+    });
+    return true; // fail open
+  }
 }
 
 async function releaseLock(key) {
-  await redis.del(key).catch(() => {}); // ignore errors on release
+  await redis.del(key).catch((err) =>
+    logger.warn(`Redis releaseLock failed for ${key} (will expire via TTL)`, { error: err.message })
+  );
 }
 
-// ── IDEMPOTENCY HELPERS ──────────────────────────────────────────
 async function isEventProcessed(eventId) {
   if (!eventId) return false;
-  const key = `webhook:processed:${eventId}`;
-  const exists = await redis.get(key);
-  return exists === '1';
+  try {
+    return (await redis.get(`webhook:processed:${eventId}`)) === '1';
+  } catch (err) {
+    logger.error(`⚠️ Redis isEventProcessed failed for ${eventId} — assuming not processed`, {
+      error: err.message,
+    });
+    return false; // fail open — rely on the MongoDB-level guard instead
+  }
 }
 
 async function markEventProcessed(eventId, ttlSeconds = 86400) {
   if (!eventId) return;
-  await redis.set(`webhook:processed:${eventId}`, '1', 'EX', ttlSeconds);
+  await redis.set(`webhook:processed:${eventId}`, '1', 'EX', ttlSeconds).catch((err) =>
+    logger.warn(`Redis markEventProcessed failed for ${eventId}`, { error: err.message })
+  );
 }
 
-// ── ORDER LOOKUP ──────────────────────────────────────────────────
-async function findOrderByReference(orderReference) {
-  if (!orderReference) return null;
-  const ref = String(orderReference).trim();
+// ── ORDER LOOKUP ─────────────────────────────────────────────────
+// order.monnifyReference matches Order.js — renamed from nombaReference.
+async function findOrderByReference(paymentReference) {
+  if (!paymentReference) return null;
+  const ref = String(paymentReference).trim();
   if (!ref) return null;
 
-  const conditions = [{ nombaReference: ref }];
-  // If it looks like a MongoDB ObjectId, also search by _id
+  const conditions = [{ monnifyReference: ref }];
   if (/^[a-f\d]{24}$/i.test(ref)) {
     conditions.push({ _id: ref });
   }
   return Order.findOne({ $or: conditions });
 }
 
-// ── NOMBA AMOUNT NORMALISER ──────────────────────────────────────
-// Nomba may send amount as Naira string ("1000.50") OR Kobo integer (100050).
-// This function auto-detects which one it is.
-function normalizeNombaAmount(raw) {
-  if (raw === undefined || raw === null) {
-    return { valid: false, kobo: 0 };
+// ── SERVER-SIDE VERIFICATION (authoritative — never trust the webhook body) ─
+async function verifyTransaction(paymentReference) {
+  const accessToken = await getMonnifyAccessToken();
+  if (!accessToken) {
+    throw new Error('Could not obtain Monnify access token for verification');
   }
-  const num = Number(raw);
-  if (!Number.isFinite(num)) return { valid: false, kobo: 0 };
 
-  // Heuristic: if number > 1000, treat as Kobo (since ₦10 is minimum viable order)
-  // Otherwise treat as Naira and convert to Kobo.
-  if (num > 1000) {
-    return { valid: true, kobo: Math.round(num) };
-  } else {
-    return { valid: true, kobo: Math.round(num * 100) };
-  }
+  const response = await axios.get(
+    `${MONNIFY_BASE_URL}/api/v2/merchant/transactions/query`,
+    {
+      params: { paymentReference },
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 15000,
+    }
+  );
+
+  const body = response.data.responseBody;
+  return {
+    paymentStatus: body.paymentStatus, // PAID | PARTIALLY_PAID | PENDING | OVERPAID | FAILED | REVERSED | EXPIRED
+    amountPaid: Number(body.amountPaid || 0), // Naira, decimal — NOT kobo
+    totalPayable: Number(body.totalPayable || 0),
+    settlementAmount: Number(body.settlementAmount || 0),
+    paymentMethod: body.paymentMethod,
+    transactionReference: body.transactionReference,
+    paymentSourceInformation: body.paymentSourceInformation,
+  };
 }
 
-// ── WEBHOOK ENDPOINT ──────────────────────────────────────────────
-router.post('/nomba', async (req, res) => {
-  const rawBody = req.body; // must be a Buffer from express.raw()
-  const signature = req.headers['x-nomba-signature'] || req.headers['x-signature'];
-
-  // ── 1. Verify signature (cheap, no DB) ─────────────────────────
-  if (!verifyNombaSignature(rawBody, signature)) {
-    logger.error('Nomba webhook: signature verification FAILED', {
-      ip: req.ip,
-      hasSignatureHeader: !!signature,
-    });
-    return res.status(401).json({ received: false, error: 'invalid signature' });
+// ── OVERPAYMENT / UNDERPAYMENT GUARD ────────────────────────────
+// This is the function that decides whether an amount actually satisfies
+// an order. Called against the *verified* amount from verifyTransaction(),
+// never against the raw webhook payload.
+//
+// order.total is assumed stored in kobo (matches the rest of this codebase).
+// Monnify reports amountPaid in Naira as a decimal, so it's converted here.
+//
+// Returns one of: 'exact' | 'overpaid' | 'underpaid' | 'invalid'
+function evaluatePaymentAmount({ expectedKobo, amountPaidNaira }) {
+  if (!Number.isFinite(expectedKobo) || expectedKobo <= 0) {
+    return { verdict: 'invalid', reason: 'Invalid expected amount on order' };
   }
 
-  // ── 2. Parse JSON payload ──────────────────────────────────────
+  const paidKobo = Math.round(Number(amountPaidNaira) * 100);
+  if (!Number.isFinite(paidKobo)) {
+    return { verdict: 'invalid', reason: `Unparseable amountPaid: ${amountPaidNaira}` };
+  }
+  const diff = paidKobo - expectedKobo;
+  if (Math.abs(diff) <= 1) {
+    return { verdict: 'exact', paidKobo, expectedKobo, diffKobo: 0 };
+  }
+  if (diff < 0) {
+    return { verdict: 'underpaid', paidKobo, expectedKobo, shortfallKobo: -diff };
+  }
+  return { verdict: 'overpaid', paidKobo, expectedKobo, excessKobo: diff };
+}
+
+// ── WEBHOOK ENDPOINT ─────────────────────────────────────────────
+router.post('/monnify', async (req, res) => {
+  const rawBody = req.body; // must be a Buffer
+  const signature = req.headers['monnify-signature'];
+
+  if (ENFORCE_IP_WHITELIST && !isFromMonnifyIp(req)) {
+    logger.error('Monnify webhook: request from non-whitelisted IP', { ip: req.ip });
+    return res.status(401).json({ received: false, error: 'unauthorized origin' });
+  }
+
+  // ── 2. Signature verification ───────────────────────────────────
+  // Required in production. Sandbox never sends this header, so we skip
+  // strictly on signature there — verifyTransaction() below is the real
+  // gate in that case.
+  if (ENFORCE_SIGNATURE) {
+    if (!verifyMonnifySignature(rawBody, signature)) {
+      logger.error('Monnify webhook: signature verification FAILED', {
+        ip: req.ip,
+        hasSignatureHeader: !!signature,
+      });
+      return res.status(401).json({ received: false, error: 'invalid signature' });
+    }
+  } else if (signature && !verifyMonnifySignature(rawBody, signature)) {
+   
+    logger.warn('Monnify webhook: signature present but did not verify (non-production)');
+  }
+
+  // ── 3. Parse payload ─────────────────────────────────────────────
   let payload;
   try {
-    payload = Buffer.isBuffer(rawBody)
-      ? JSON.parse(rawBody.toString('utf8'))
-      : rawBody;
+    payload = Buffer.isBuffer(rawBody) ? JSON.parse(rawBody.toString('utf8')) : rawBody;
   } catch (err) {
     logger.error('Webhook: failed to parse JSON body', { error: err.message });
     return res.status(400).json({ received: false, error: 'invalid payload' });
   }
 
-  const { type, data, eventId } = payload;
-  const orderReference = data?.orderReference;
+  // across versions before (see their changelog).
+  const eventType = payload.eventType || payload.event;
+  const eventData = payload.eventData || payload.data || {};
+  const paymentReference = eventData.paymentReference;
+  const transactionReference = eventData.transactionReference;
 
-  if (!orderReference) {
-    logger.warn('Webhook received without orderReference', { type, eventId });
-    // Still return 200 to avoid Nomba retrying, but log the issue.
-    return res.json({ received: true, warning: 'missing orderReference' });
+  if (!paymentReference) {
+    logger.warn('Monnify webhook received without paymentReference', { eventType });
+    return res.json({ received: true, warning: 'missing paymentReference' });
   }
 
-  // ── 3. Idempotency check (reject duplicates immediately) ──────
-  if (eventId) {
-    const alreadyProcessed = await isEventProcessed(eventId);
-    if (alreadyProcessed) {
-      logger.info(`Webhook ${eventId} already processed — ignoring duplicate`);
-      return res.json({ received: true, status: 'duplicate' });
-    }
+  // ── 4. Idempotency ────────────────────────────────────────────────
+  const eventId = transactionReference || `${eventType}:${paymentReference}`;
+  if (await isEventProcessed(eventId)) {
+    logger.info(`Webhook ${eventId} already processed — ignoring duplicate`);
+    return res.json({ received: true, status: 'duplicate' });
   }
 
-  // ── 4. Acquire distributed lock per order ──────────────────────
-  const lockKey = `webhook:lock:${orderReference}`;
-  const locked = await acquireLock(lockKey, 60); // 60 seconds max processing time
+  // ── 5. Distributed lock per order ───────────────────────────────
+  const lockKey = `webhook:lock:${paymentReference}`;
+  const locked = await acquireLock(lockKey, 60);
   if (!locked) {
-    logger.warn(`Webhook: another instance is already processing order ${orderReference}`);
+    logger.warn(`Webhook: another instance already processing ${paymentReference}`);
     return res.json({ received: true, status: 'already_processing' });
   }
 
-  // ── 5. Acknowledge Nomba immediately (non-blocking) ────────────
+  // ── 6. Acknowledge immediately — Monnify retries every 5 min up to
+  // 12 times if it doesn't get a prompt 200. ──────────────────────
   res.json({ received: true });
 
-  // ── 6. Process asynchronously with lock held ───────────────────
   setImmediate(async () => {
     try {
-      logger.info(`Webhook processing: ${type} | reference: ${orderReference} | event: ${eventId || 'N/A'}`);
+      logger.info(`Monnify webhook processing: ${eventType} | ref: ${paymentReference}`);
 
-      // ── 6a. Find the order ──────────────────────────────────────
-      const order = await findOrderByReference(orderReference);
+      const order = await findOrderByReference(paymentReference);
       if (!order) {
-        logger.error(`Order not found for reference: ${orderReference}`);
+        logger.error(`Order not found for paymentReference: ${paymentReference}`);
         return;
       }
 
-      // ── 6b. Handle event types ──────────────────────────────────
-      switch (type) {
-        // ── SUCCESS EVENTS ──────────────────────────────────────
-        case 'checkout.success':
-        case 'payment.successful': {
-          // Extra safety: re-check status inside the lock
-          if (order.paymentStatus === 'completed') {
-            logger.info(`Order ${order.orderNumber} already completed — ignoring`);
-            break;
-          }
+      if (order.paymentStatus === 'completed') {
+        logger.info(`Order ${order.orderNumber} already completed — ignoring`);
+        return;
+      }
 
-          // Normalise Nomba amount (auto-detects Kobo vs Naira)
-          const normalized = normalizeNombaAmount(data?.amount);
-          if (!normalized.valid) {
-            logger.error(`Amount normalisation failed for ${order.orderNumber}`, {
-              raw: data?.amount,
-            });
-            order.paymentStatus = 'payment_discrepancy';
-            order.addStatus('payment_discrepancy', `Invalid amount format: ${data?.amount}`);
-            await order.save();
-            break;
-          }
+      // ── Explicit REJECTED_PAYMENT: Monnify already returned the funds.
+      if (eventType === 'REJECTED_PAYMENT') {
+        order.paymentStatus = 'rejected'; // valid enum value on Order.js
+        order.addPaymentNote('Monnify rejected an over/under payment and returned funds to sender');
+        await order.save();
+        logger.warn(`Payment rejected by Monnify gateway for ${order.orderNumber}`);
 
-          const paidKobo = normalized.kobo;
-          const paidCurrency = data?.currency || 'NGN';
+        let receivedAmount;
+        try {
+          const verified = await verifyTransaction(paymentReference);
+          receivedAmount = verified.amountPaid;
+        } catch (err) {
+          logger.warn(`Could not fetch verified amount for rejected-payment email on ${order.orderNumber}: ${err.message}`);
+        }
 
-          // Strict amount + currency check (±1 kobo tolerance for rounding)
-          const amountOk = Math.abs(paidKobo - order.total) <= 1;
-          const currencyOk = paidCurrency === 'NGN';
+        sendPaymentRejectedEmail(order, {
+          expectedAmount: order.total / 100,
+          receivedAmount,
+        }).catch((err) =>
+          logger.error(`Failed to send payment-rejected email for ${order.orderNumber}: ${err.message}`)
+        );
 
-          if (!amountOk || !currencyOk) {
-            logger.error(`Amount/currency mismatch for ${order.orderNumber}`, {
-              expectedKobo: order.total,
-              receivedKobo: paidKobo,
-              currency: paidCurrency,
-            });
-            order.paymentStatus = 'payment_discrepancy';
-            order.addStatus(
-              'payment_discrepancy',
-              `Amount mismatch: expected ${order.total}k, got ${paidKobo}k (${paidCurrency})`
+        return;
+      }
+
+      if (eventType === 'FAILED_TRANSACTION' || eventType === 'FAILED_COLLECTION') {
+        if (order.paymentStatus === 'pending') {
+          order.paymentStatus = 'failed';
+          order.addPaymentNote('Payment failed (Monnify)');
+        
+          await order.save();
+        }
+        return;
+      }
+
+      const verified = await verifyTransaction(paymentReference);
+
+      const evaluation = evaluatePaymentAmount({
+        expectedKobo: order.total,
+        amountPaidNaira: verified.amountPaid,
+      });
+
+      if (evaluation.verdict === 'invalid') {
+        order.paymentStatus = 'discrepancy';
+        order.addPaymentNote(evaluation.reason);
+        await order.save();
+        logger.error(`Invalid amount for ${order.orderNumber}`, evaluation);
+        return;
+      }
+
+      const mappedMethod = Order.mapPaymentMethod(verified.paymentMethod);
+
+      switch (verified.paymentStatus) {
+        case 'PAID':
+        case 'OVERPAID': {
+          if (evaluation.verdict === 'underpaid') {
+            order.paymentStatus = 'discrepancy';
+            order.addPaymentNote(
+              `Status ${verified.paymentStatus} but verified amount (₦${verified.amountPaid}) is below expected`
             );
             await order.save();
-            // TODO: Trigger admin alert (Slack / PagerDuty / email)
             break;
           }
 
-          // ✅ All checks passed — process payment with transaction
+          order.transactionId = verified.transactionReference;
+          order.paymentMethod = mappedMethod;
+          order.paidAt = new Date();
+
+          if (evaluation.verdict === 'overpaid') {
+            order.overpaymentFlag = true;
+            order.overpaidAmount = evaluation.excessKobo;
+            order.addPaymentNote(
+              `Overpaid by ₦${(evaluation.excessKobo / 100).toFixed(2)} — flagged for refund/credit review`
+            );
+            // TODO: trigger refund-of-excess or wallet-credit workflow here.
+            logger.warn(`Order ${order.orderNumber} overpaid by ${evaluation.excessKobo} kobo`);
+          }
+
+          await order.save(); // persist paymentMethod/overpayment fields before fulfilment runs
+
           await processSuccessfulPayment(order, {
-            ...data,
-            _normalizedAmountKobo: paidKobo, // pass normalised value to avoid re-computation
+            transactionReference: verified.transactionReference,
+            paymentMethod: mappedMethod,
+            _verifiedAmountKobo: evaluation.paidKobo,
           });
           break;
         }
 
-        // ── FAILURE EVENTS ──────────────────────────────────────
-        case 'checkout.failed':
-        case 'payment.failed': {
+        case 'PARTIALLY_PAID': {
+          order.paymentStatus = 'flagged_underpaid'; // valid enum value, order stays unfulfilled
+          order.addPaymentNote(
+            `Underpaid by ₦${(evaluation.shortfallKobo / 100).toFixed(2)} — do not fulfil`
+          );
+          await order.save();
+          logger.warn(`Order ${order.orderNumber} underpaid, shortfall ${evaluation.shortfallKobo} kobo`);
+          // TODO: trigger customer notification requesting the balance,
+          // or auto-refund the partial amount depending on your polic
+          break;
+        }
+
+        case 'PENDING':
+          logger.info(`Order ${order.orderNumber} still PENDING on verification — no action`);
+          break;
+
+        case 'FAILED':
           if (order.paymentStatus === 'pending') {
             order.paymentStatus = 'failed';
-            order.addStatus('cancelled', `Payment failed: ${data?.failureReason || 'unknown'}`);
+            order.addPaymentNote('Payment failed (verified)');
             await order.save();
-            logger.info(`Payment failed for order ${order.orderNumber}`);
-          } else {
-            logger.info(`Order ${order.orderNumber} status is ${order.paymentStatus} — ignoring failure event`);
           }
           break;
-        }
 
-        // ── REFUND / REVERSAL EVENTS ────────────────────────────
-        case 'refund.successful':
-        case 'payment_reversal':
-        case 'reversal.successful': {
-          const originalTx = data?.originalTransactionId || data?.transactionId;
-          if (!originalTx) {
-            logger.error('Refund/reversal event missing original transaction ID', { type, data });
-            break;
-          }
-
-          // Find the original order by its transaction ID
-          const targetOrder = await Order.findOne({ transactionId: originalTx });
-          if (!targetOrder) {
-            logger.error(`Order not found for reversal: originalTx=${originalTx}`);
-            break;
-          }
-
-          if (targetOrder.paymentStatus === 'refunded') {
-            logger.info(`Order ${targetOrder.orderNumber} already refunded — ignoring duplicate`);
-            break;
-          }
-
-          // ⭐ Use MongoDB transaction to roll back stock atomically ⭐
-          const session = await mongoose.startSession();
-          session.startTransaction();
-
-          try {
-            // Restore stock for all items (refund = return inventory)
-            for (const item of targetOrder.items) {
-              await Product.findByIdAndUpdate(
-                item.product,
-                {
-                  $inc: {
-                    stock: item.quantity,
-                    totalSold: -item.quantity, // revert sales count
-                  },
-                },
-                { session }
-              );
-            }
-
-            // Update order status
-            targetOrder.paymentStatus = 'refunded';
-            targetOrder.addStatus(
-              'refunded',
-              `Refund processed: ${data?.amount ? '₦' + data.amount : 'full refund'}`
-            );
-            await targetOrder.save({ session });
-
-            await session.commitTransaction();
-            logger.info(`✅ Refund/reversal processed for order ${targetOrder.orderNumber}`);
-          } catch (err) {
-            await session.abortTransaction();
-            logger.error(`Refund transaction failed for ${targetOrder.orderNumber}`, {
-              error: err.message,
-            });
-            throw err; // re-throw so the outer catch logs it
-          } finally {
-            session.endSession();
+        case 'EXPIRED':
+        
+          if (order.paymentStatus === 'pending') {
+            order.paymentStatus = 'expired';
+            order.addPaymentNote('Checkout session expired (verified)');
+            await order.save();
           }
           break;
-        }
 
-        // ── UNHANDLED EVENTS ────────────────────────────────────
-        default: {
-          logger.info(`Unhandled webhook type: ${type}`, {
-            reference: orderReference,
-            eventId,
+        case 'REVERSED':
+          await handleReversal(transactionReference, verified);
+          break;
+
+        default:
+          logger.info(`Unhandled verified paymentStatus: ${verified.paymentStatus}`, {
+            paymentReference,
           });
-          // Optionally store unknown events in a separate collection for inspection
-          // await UnknownWebhook.create({ type, data, eventId, receivedAt: new Date() });
-        }
       }
 
-      // ── 7. Mark event as processed (idempotency) ──────────────
-      if (eventId) {
-        await markEventProcessed(eventId);
-      }
+      await markEventProcessed(eventId);
     } catch (err) {
-      // Sanitise error before logging (avoid leaking secrets)
       const sanitizedError = {
         message: err.message,
         code: err.code,
         ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
       };
-      logger.error('Webhook processing error:', sanitizedError);
+      logger.error('Monnify webhook processing error:', sanitizedError);
     } finally {
-      // ── 8. Always release the lock ──────────────────────────────
       await releaseLock(lockKey);
     }
   });
-  
 });
-// routes/webhooks.js
-router.post('/webhooks/brevo', express.json(), async (req, res) => {
+
+// ── REFUND / REVERSAL HANDLING (same stock-rollback pattern as before) ─
+async function handleReversal(transactionReference, verified) {
+  if (!transactionReference) {
+    logger.error('Reversal event missing transactionReference');
+    return;
+  }
+
+  const targetOrder = await Order.findOne({ transactionId: transactionReference });
+  if (!targetOrder) {
+    logger.error(`Order not found for reversal: transactionId=${transactionReference}`);
+    return;
+  }
+
+  if (targetOrder.paymentStatus === 'refunded') {
+    logger.info(`Order ${targetOrder.orderNumber} already refunded — ignoring duplicate`);
+    return;
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    for (const item of targetOrder.items) {
+      await Product.findByIdAndUpdate(
+        item.product,
+        { $inc: { stock: item.quantity, totalSold: -item.quantity } },
+        { session }
+      );
+    }
+
+    targetOrder.paymentStatus = 'refunded'; // valid on both paymentStatus AND status enums
+    targetOrder.addStatus(
+      'refunded',
+      `Refund/reversal processed: ₦${verified.amountPaid?.toLocaleString?.() ?? verified.amountPaid}`
+    );
+    await targetOrder.save({ session });
+
+    await session.commitTransaction();
+    logger.info(`✅ Refund/reversal processed for order ${targetOrder.orderNumber}`);
+  } catch (err) {
+    await session.abortTransaction();
+    logger.error(`Refund transaction failed for ${targetOrder.orderNumber}`, { error: err.message });
+    throw err;
+  } finally {
+    session.endSession();
+  }
+}
+
+// ── BACKGROUND RECONCILIATION ──
+async function syncStuckPayments() {
+  const staleCutoff = new Date(Date.now() - 5 * 60 * 1000);
+
+  const pendingOrders = await Order.find({
+    paymentStatus: 'pending',
+    createdAt: { $lt: staleCutoff },
+    monnifyReference: { $exists: true, $ne: null },
+  }).limit(100);
+
+  if (pendingOrders.length === 0) return;
+
+  logger.info(`🔄 Reconciliation: checking ${pendingOrders.length} stuck pending order(s)`);
+
+  for (const order of pendingOrders) {
+    const lockKey = `webhook:lock:${order.monnifyReference}`;
+    const locked = await acquireLock(lockKey, 60);
+    if (!locked) continue; // a webhook is actively handling this one right now
+
+    try {
+      const verified = await verifyTransaction(order.monnifyReference);
+      const evaluation = evaluatePaymentAmount({
+        expectedKobo: order.total,
+        amountPaidNaira: verified.amountPaid,
+      });
+
+      if (
+        (verified.paymentStatus === 'PAID' || verified.paymentStatus === 'OVERPAID') &&
+        evaluation.verdict !== 'underpaid' &&
+        evaluation.verdict !== 'invalid'
+      ) {
+        const mappedMethod = Order.mapPaymentMethod(verified.paymentMethod);
+        order.transactionId = verified.transactionReference;
+        order.paymentMethod = mappedMethod;
+        order.paidAt = new Date();
+
+        if (evaluation.verdict === 'overpaid') {
+          order.overpaymentFlag = true;
+          order.overpaidAmount = evaluation.excessKobo;
+          order.addPaymentNote(
+            `Overpaid by ₦${(evaluation.excessKobo / 100).toFixed(2)} (recovered via reconciliation) — flagged for refund/credit review`
+          );
+        }
+        await order.save();
+
+        await processSuccessfulPayment(order, {
+          transactionReference: verified.transactionReference,
+          paymentMethod: mappedMethod,
+          _verifiedAmountKobo: evaluation.paidKobo,
+        });
+        logger.info(`🎉 Recovered stuck payment: ${order.orderNumber}`);
+      } else if (verified.paymentStatus === 'PARTIALLY_PAID' || evaluation.verdict === 'underpaid') {
+        order.paymentStatus = 'flagged_underpaid';
+        order.addPaymentNote('Recovered via reconciliation sync — underpaid');
+        await order.save();
+        logger.warn(`⚠️ Reconciliation found underpayment for ${order.orderNumber}`);
+      } else if (verified.paymentStatus === 'FAILED') {
+        order.paymentStatus = 'failed';
+        order.addPaymentNote('Payment failed (reconciliation)');
+        await order.save();
+      } else if (verified.paymentStatus === 'EXPIRED') {
+        order.paymentStatus = 'expired'; // real enum value, shared with releaseAbandonedReservations()
+        order.addPaymentNote('Payment expired (reconciliation)');
+        await order.save();
+      }
+      // PENDING / REJECTED_PAYMENT etc. — leave as-is, next sync pass will re-check.
+    } catch (error) {
+      logger.error(`🚨 Reconciliation error for ${order.orderNumber}`, { error: error.message });
+    } finally {
+      await releaseLock(lockKey);
+    }
+  }
+}
+
+cron.schedule('*/5 * * * *', () => {
+  syncStuckPayments().catch((err) =>
+    logger.error('Reconciliation cron crashed', { error: err.message })
+  );
+});
+
+// ── BREVO EMAIL WEBHOOK (unchanged) ──────────────────────────────
+router.post('/brevo', express.json(), async (req, res) => {
   const { event, email, ['message-id']: messageId, tag, tags } = req.body;
 
   await EmailLog.create({
-    event,          // 'delivered', 'hardBounce', 'blocked', etc.
+    event,
     recipient: email,
     messageId,
     tags: tags || [],
@@ -360,11 +597,12 @@ router.post('/webhooks/brevo', express.json(), async (req, res) => {
   });
 
   if (event === 'hardBounce' || event === 'blocked') {
-    // flag the customer record — bad address, don't retry blindly
     await User.updateOne({ email }, { emailDeliverable: false });
   }
 
-  res.sendStatus(200); // always 200 quickly — Brevo retries on non-2xx
+  res.sendStatus(200);
 });
 
 module.exports = router;
+module.exports.verifyTransaction = verifyTransaction;
+module.exports.evaluatePaymentAmount = evaluatePaymentAmount;

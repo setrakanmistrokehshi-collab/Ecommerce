@@ -4,11 +4,12 @@ const express = require('express');
 const Order = require('../models/Order');
 const { protect, restrictTo } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
+const webhooksMonnify = require('./webhooks'); // adjust path to match your actual filename
+const { verifyTransaction, evaluatePaymentAmount } = webhooksMonnify;
 
 const router = express.Router();
 
 // ── GUEST ORDER LOOKUP (no auth required) ──────────────────────────
-// Guests can check order status by email + order number/ID
 router.get('/guest/:reference', async (req, res, next) => {
   try {
     const { email } = req.query;
@@ -90,6 +91,13 @@ router.post('/:id/cancel', async (req, res, next) => {
       return next(new AppError(`Cannot cancel an order with status: ${order.status}`, 400));
     }
 
+    // Guard: don't let a customer cancel an order that's already mid-review
+    // for a payment discrepancy — that needs admin eyes first, not a
+    // customer-triggered cancel that could race the reconciliation job.
+    if (['flagged_underpaid', 'discrepancy', 'rejected'].includes(order.paymentStatus)) {
+      return next(new AppError('This order is under payment review — contact support to cancel', 400));
+    }
+
     order.addStatus('cancelled', req.body.reason || 'Cancelled by customer');
     order.cancelReason = req.body.reason;
     await order.save();
@@ -106,9 +114,10 @@ router.use(restrictTo('admin'));
 // GET /api/v1/orders/admin/all — all orders with filters
 router.get('/admin/all', async (req, res, next) => {
   try {
-    const { status, page = 1, limit = 20, search } = req.query;
+    const { status, paymentStatus, page = 1, limit = 20, search } = req.query;
     const filter = {};
     if (status) filter.status = status;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
     if (search) {
       filter.$or = [
         { orderNumber: new RegExp(search, 'i') },
@@ -127,6 +136,62 @@ router.get('/admin/all', async (req, res, next) => {
     ]);
 
     res.json({ success: true, orders, total, page: parseInt(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/v1/orders/admin/payment-issues — orders the Monnify payment
+// guard flagged: underpaid/discrepancy/rejected (unfulfilled, need a
+// decision), or overpaid (fulfilled, but still owes a refund/credit —
+// tracked via overpaymentFlag rather than paymentStatus, since the
+// order genuinely IS 'completed' in that case).
+router.get('/admin/payment-issues', async (req, res, next) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+
+    const filter = {
+      $or: [
+        { paymentStatus: { $in: ['flagged_underpaid', 'discrepancy', 'rejected'] } },
+        { overpaymentFlag: true },
+      ],
+    };
+
+    const [orders, total] = await Promise.all([
+      Order.find(filter)
+        .sort({ updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
+        .populate('user', 'name email')
+        .populate('items.product', 'name emoji slug'),
+      Order.countDocuments(filter),
+    ]);
+
+    res.json({ success: true, orders, total, page: parseInt(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/v1/orders/admin/:id/verify-payment — manually re-run the
+// Monnify server-side verification + overpayment/underpayment guard for
+// one order. Useful when support wants to double-check a flagged order
+// without waiting for the next reconciliation cron pass.
+router.post('/admin/:id/verify-payment', async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return next(new AppError('Order not found', 404));
+    if (!order.monnifyReference) {
+      return next(new AppError('This order has no Monnify payment reference to verify', 400));
+    }
+
+    const verified = await verifyTransaction(order.monnifyReference);
+    const evaluation = evaluatePaymentAmount({
+      expectedKobo: order.total,
+      amountPaidNaira: verified.amountPaid,
+    });
+
+    res.json({ success: true, verified, evaluation, orderStatus: order.status, paymentStatus: order.paymentStatus });
   } catch (err) {
     next(err);
   }

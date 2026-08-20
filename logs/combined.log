@@ -1,0 +1,20 @@
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-08-20 15:08:21"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-08-20 15:08:22"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-08-20 15:08:22"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-20 15:08:22"}
+{"level":"info","message":"✅ Redis connected","timestamp":"2026-08-20 15:08:24"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-20 15:08:29"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-20 15:08:29"}
+{"level":"info","message":"SIGINT received — shutting down gracefully","timestamp":"2026-08-20 15:08:50"}
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-08-20 15:43:43"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-08-20 15:43:43"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-08-20 15:43:43"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-20 15:43:43"}
+{"level":"info","message":"✅ Redis connected","timestamp":"2026-08-20 15:43:44"}
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-08-20 15:44:03"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-08-20 15:44:03"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-08-20 15:44:03"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-20 15:44:04"}
+{"level":"info","message":"✅ Redis connected","timestamp":"2026-08-20 15:44:05"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-20 15:44:08"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-20 15:44:08"}

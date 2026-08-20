@@ -24,9 +24,6 @@ const orderSchema = new mongoose.Schema({
     type: String,
     unique: true,
     index: true,
-    // Generated in the pre-save hook below using a timestamp +
-    // random suffix — safe against duplicate numbers even if orders
-    // are deleted (unlike countDocuments-based approaches).
   },
 
   user: {
@@ -35,12 +32,8 @@ const orderSchema = new mongoose.Schema({
     required: true,
   },
 
-  // FIX: guestEmail declared only once (was duplicated on lines 24
-  // and 57 in the original — Mongoose silently used the last one).
   guestEmail: {
     type: String,
-    // Populated only for guest checkout orders. Identifies guest
-    // orders in the admin dashboard without a full user lookup.
   },
 
   items: {
@@ -52,8 +45,9 @@ const orderSchema = new mongoose.Schema({
 
   // ── Pricing (all values stored in KOBO — integer) ──────────────
   // e.g. ₦1,000.50 → stored as 100050
-  // payments.js converts to naira string at the Nomba API boundary
-  // and converts back to kobo when verifying webhook/status responses.
+  // Monnify's API reports amounts in decimal Naira — the Monnify
+  // service layer converts to/from kobo at that boundary, same
+  // pattern the old Nomba integration used.
   subtotal:  { type: Number, required: true },
   discount:  { type: Number, default: 0 },
   shipping:  { type: Number, default: 0 },
@@ -61,7 +55,7 @@ const orderSchema = new mongoose.Schema({
   total:     { type: Number, required: true },
   promoCode: { type: String },
 
-  // ── Order status ───────────────────────────────────────────────
+  // ── Order status (lifecycle) ──────────────────────────────────
   status: {
     type: String,
     enum: ['pending', 'paid', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'],
@@ -76,30 +70,57 @@ const orderSchema = new mongoose.Schema({
   // ── Payment ────────────────────────────────────────────────────
   paymentStatus: {
     type: String,
-    // 'expired' is set by the releaseAbandonedReservations() cron job
-    // when a user abandons the Nomba checkout page after 30 minutes.
-    enum: ['pending', 'completed', 'failed', 'refunded', 'expired'],
+    // 'expired' — set by releaseAbandonedReservations() when checkout
+    //   is abandoned, AND now also the direct mapping for Monnify's
+    //   EXPIRED transaction status.
+    // 'flagged_underpaid' — Monnify verify confirmed less than the
+    //   order total was paid. Order is NOT fulfilled in this state.
+    // 'discrepancy' — verified amount/status don't reconcile cleanly
+    //   (e.g. gateway says PAID but our own kobo math disagrees).
+    //   Needs manual review, distinct from a clean 'failed'.
+    // 'rejected' — Monnify's gateway itself rejected an over/under
+    //   payment and returned funds to the sender (REJECTED_PAYMENT
+    //   webhook). Distinct from 'failed': money moved and bounced
+    //   back, rather than the attempt simply not going through.
+    enum: [
+      'pending',
+      'completed',
+      'failed',
+      'refunded',
+      'expired',
+      'flagged_underpaid',
+      'discrepancy',
+      'rejected',
+    ],
     default: 'pending',
   },
   paymentMethod: {
     type: String,
-    // 'other' covers any method string Nomba returns that isn't one
-    // of the three known values — prevents silent empty field on new
-    // payment methods Nomba might add.
+    // 'other' covers any method the gateway returns that isn't one of
+    // the three known values (e.g. Monnify's PHONE_NUMBER) — prevents
+    // a validation crash on a payment method we haven't mapped yet.
     enum: ['card', 'transfer', 'ussd', 'other'],
   },
-  transactionId:  { type: String },
-  nombaReference: { type: String },
-  paidAt:         { type: Date },
+  transactionId:     { type: String },
+  monnifyReference:  { type: String }, // renamed from nombaReference during the Monnify migration
+  paidAt:            { type: Date },
 
   // ── Fulfillment flag ───────────────────────────────────────────
   // Set to true by processSuccessfulPayment() when a stock decrement
   // fails after payment is already captured (oversold item).
-  // Surfaces in the admin dashboard so a human can intervene:
-  // partial refund, backorder, or restock.
   fulfillmentFlag: {
     type: Boolean,
     default: false,
+  },
+
+  // ── Overpayment flag ───────────────────────────────────────
+  overpaymentFlag: {
+    type: Boolean,
+    default: false,
+  },
+  overpaidAmount: {
+    type: Number, // kobo — the excess amount owed back to the customer
+    default: 0,
   },
 
   // ── Delivery ───────────────────────────────────────────────────
@@ -108,8 +129,6 @@ const orderSchema = new mongoose.Schema({
   deliveredAt:       { type: Date },
 
   // ── Customer snapshot at time of order ────────────────────────
-  // Stored separately from the User document so order history stays
-  // accurate even if the user later changes their name/email/phone.
   customerName:  { type: String },
   customerEmail: { type: String },
   customerPhone: { type: String },
@@ -124,16 +143,13 @@ const orderSchema = new mongoose.Schema({
 // ── INDEXES ───────────────────────────────────────────────────────
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
-orderSchema.index({ nombaReference: 1 });
+orderSchema.index({ monnifyReference: 1 });
 orderSchema.index({ transactionId: 1 });
 orderSchema.index({ createdAt: -1 });
-orderSchema.index({ customerEmail: 1 }); // used by isPromoEligible() in payments.js
-orderSchema.index({ fulfillmentFlag: 1, paymentStatus: 1 }); // admin dashboard unfulfilled query
+orderSchema.index({ customerEmail: 1 });
+orderSchema.index({ fulfillmentFlag: 1, paymentStatus: 1 });
+orderSchema.index({ overpaymentFlag: 1 }); // admin "owed refunds" queue
 
-// Prevents a second pending order being created for the same user
-// while one is already in-flight (double-submit / race condition fix).
-// partialFilterExpression means uniqueness only applies to 'pending'
-// documents — completed and failed orders don't block future checkouts.
 orderSchema.index(
   { user: 1, paymentStatus: 1 },
   {
@@ -145,37 +161,44 @@ orderSchema.index(
 );
 
 // ── PRE-SAVE: generate order number ───────────────────────────────
-// FIX: original used countDocuments() which produces duplicate order
-// numbers if any orders are ever deleted (count drops, next insert
-// collides with an existing orderNumber).
-// Replaced with: prefix + YYMMDD + 4 random hex chars.
-// Collision probability is negligible (~1 in 65,536 per day) and the
-// unique index on orderNumber will catch the rare case and surface it
-// as a retryable duplicate-key error rather than silent corruption.
 orderSchema.pre('save', async function (next) {
   if (this.isNew) {
     const date  = new Date();
     const yy    = date.getFullYear().toString().slice(-2);
     const mm    = String(date.getMonth() + 1).padStart(2, '0');
     const dd    = String(date.getDate()).padStart(2, '0');
-    const rand  = crypto.randomBytes(2).toString('hex').toUpperCase(); // e.g. "A3F1"
-    this.orderNumber = `VTC${yy}${mm}${dd}${rand}`; // e.g. VTC250616A3F1
+    const rand  = crypto.randomBytes(2).toString('hex').toUpperCase();
+    this.orderNumber = `VTC${yy}${mm}${dd}${rand}`;
 
     this.statusHistory.push({ status: 'pending', note: 'Order created' });
   }
   next();
 });
 
-// ── METHOD: add status history entry ─────────────────────────────
-// FIX: original was missing braces on the if-block, meaning
-// this.statusHistory = [] would execute unconditionally in some
-// JS parsers, wiping history on every addStatus() call.
+// ── METHOD: add status history entry (lifecycle `status` field) ──
 orderSchema.methods.addStatus = function (status, note = '') {
   if (!this.statusHistory) {
     this.statusHistory = [];
   }
   this.statusHistory.push({ status, note, timestamp: new Date() });
   this.status = status;
+};
+
+orderSchema.methods.addPaymentNote = function (note) {
+  if (!this.statusHistory) {
+    this.statusHistory = [];
+  }
+  this.statusHistory.push({ status: this.status, note, timestamp: new Date() });
+};
+
+
+orderSchema.statics.mapPaymentMethod = function (gatewayMethod) {
+  const map = {
+    CARD: 'card',
+    ACCOUNT_TRANSFER: 'transfer',
+    USSD: 'ussd',
+  };
+  return map[gatewayMethod] || 'other';
 };
 
 module.exports = mongoose.model('Order', orderSchema);

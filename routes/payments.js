@@ -1,81 +1,26 @@
 'use strict';
 
 const express = require('express');
-const axios = require('axios');
 const { body, validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const { Redis } = require('ioredis');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
-const PromoCode = require('../models/PromoCode'); // we'll define this schema
+const PromoCode = require('../models/PromoCode');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
 const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
+const {
+  initializeTransaction,
+  verifyTransaction,
+  evaluatePaymentAmount,
+} = require('../routes/webhooks'); 
 
 const router = express.Router();
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-
-// ── NOMBA API CLIENT WITH RETRY ──────────────────────────────────
-let nombaTokenCache = { token: null, expiresAt: 0 };
-let nombaTokenPromise = null;
-
-async function getNombaToken() {
-  if (nombaTokenCache.token && Date.now() < nombaTokenCache.expiresAt - 60000) {
-    return nombaTokenCache.token;
-  }
-  if (nombaTokenPromise) return nombaTokenPromise;
-
-  nombaTokenPromise = (async () => {
-    try {
-      const res = await axios.post(
-        `${process.env.NOMBA_BASE_URL}/auth/token/issue`,
-        {
-          grant_type: 'client_credentials',
-          client_id: process.env.NOMBA_CLIENT_ID,
-          client_secret: process.env.NOMBA_CLIENT_SECRET,
-        },
-        { timeout: 10000 }
-      );
-      nombaTokenCache = {
-        token: res.data.access_token,
-        expiresAt: Date.now() + (res.data.expires_in * 1000 || 3600000),
-      };
-      return nombaTokenCache.token;
-    } finally {
-      nombaTokenPromise = null;
-    }
-  })();
-  return nombaTokenPromise;
-}
-
-async function nombaRequest(method, endpoint, data = {}, retries = 2) {
-  const token = await getNombaToken();
-  const url = `${process.env.NOMBA_BASE_URL}${endpoint}`;
-
-  for (let attempt = 1; attempt <= retries + 1; attempt++) {
-    try {
-      return await axios({
-        method,
-        url,
-        data,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          accountId: process.env.NOMBA_ACCOUNT_ID,
-          'Content-Type': 'application/json',
-        },
-        timeout: 15000,
-      });
-    } catch (err) {
-      if (attempt > retries) throw err;
-      const delay = 1000 * Math.pow(2, attempt - 1);
-      logger.warn(`Nomba request retry ${attempt} after ${delay}ms`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-}
 
 // ── UTILITY: KOBO ↔ NAIRA ────────────────────────────────────────
 function toKobo(naira) {
@@ -96,7 +41,6 @@ async function validatePromoCode(code, userId, email) {
   });
   if (!promo) return null;
 
-  // Check usage limits
   if (promo.maxUses && promo.usedCount >= promo.maxUses) return null;
   if (promo.perUserLimit) {
     const userUsage = await Order.countDocuments({
@@ -107,7 +51,6 @@ async function validatePromoCode(code, userId, email) {
     if (userUsage >= promo.perUserLimit) return null;
   }
 
-  // First‑order only check
   if (promo.firstOrderOnly) {
     const priorOrder = await Order.findOne({
       paymentStatus: 'completed',
@@ -143,8 +86,9 @@ async function releaseLock(key) {
 }
 
 // ── PROCESS SUCCESSFUL PAYMENT (with Transaction + Lock) ────────
-async function processSuccessfulPayment(order, nombaData = {}) {
-  // 1. Distributed lock per order to prevent concurrent calls
+// verifiedData: { transactionReference, paymentMethod, amountPaidNaira, currency }
+
+async function processSuccessfulPayment(order, verifiedData = {}) {
   const lockKey = `payment:process:${order._id}`;
   const locked = await acquireLock(lockKey, 60);
   if (!locked) {
@@ -153,58 +97,46 @@ async function processSuccessfulPayment(order, nombaData = {}) {
   }
 
   try {
-    // 2. Double-check status
     if (order.paymentStatus === 'completed') {
       logger.info(`Order ${order.orderNumber} already completed — skipping`);
       return;
     }
 
-    // 3. Amount normalisation (webhook already does this, but status poll may call directly)
-    let paidKobo = nombaData._normalizedAmountKobo;
-    if (paidKobo === undefined && nombaData.amount !== undefined) {
-      const normalized = normalizeNombaAmount(nombaData.amount);
-      if (!normalized.valid) {
-        logger.error(`Invalid amount format for ${order.orderNumber}`);
+    // ── Amount validation ────────────────────────────────────────
+    let paidKobo = verifiedData._verifiedAmountKobo;
+    if (paidKobo === undefined && verifiedData.amountPaidNaira !== undefined) {
+      const evaluation = evaluatePaymentAmount({
+        expectedKobo: order.total,
+        amountPaidNaira: verifiedData.amountPaidNaira,
+      });
+      if (evaluation.verdict === 'invalid' || evaluation.verdict === 'underpaid') {
+        logger.error(`Amount mismatch for ${order.orderNumber}`, evaluation);
         order.paymentStatus = 'payment_discrepancy';
         await order.save();
         return;
       }
-      paidKobo = normalized.kobo;
+      paidKobo = evaluation.paidKobo;
     }
 
-    // 4. Validate amount if we have it
-    if (paidKobo !== undefined) {
-      if (Math.abs(paidKobo - order.total) > 1) {
-        logger.error(`Amount mismatch for ${order.orderNumber}`, {
-          expected: order.total,
-          received: paidKobo,
-        });
-        order.paymentStatus = 'payment_discrepancy';
-        await order.save();
-        return;
-      }
-    }
-
-    if (nombaData.currency && nombaData.currency !== 'NGN') {
+    if (verifiedData.currency && verifiedData.currency !== 'NGN') {
       logger.error(`Currency mismatch for ${order.orderNumber}`);
       order.paymentStatus = 'payment_discrepancy';
       await order.save();
       return;
     }
 
-    // 5. ⭐ ATOMIC UPDATE using MongoDB Transaction ⭐
+    // ── ATOMIC UPDATE using MongoDB Transaction ──────────────────
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      // 5a. Update order status
       order.paymentStatus = 'completed';
-      order.transactionId = nombaData.transactionId || nombaData.reference || order.transactionId;
+      order.transactionId =
+        verifiedData.transactionReference || verifiedData.reference || order.transactionId;
       order.paidAt = new Date();
       order.addStatus('paid', 'Payment confirmed');
       await order.save({ session });
 
-      // 5b. Decrement stock & release reservations atomically
       const stockIssues = [];
       for (const item of order.items) {
         const result = await Product.findOneAndUpdate(
@@ -216,14 +148,13 @@ async function processSuccessfulPayment(order, nombaData = {}) {
             $inc: {
               stock: -item.quantity,
               totalSold: item.quantity,
-              reserved: -item.quantity, // release reservation
+              reserved: -item.quantity,
             },
           },
-          { session, new: true }
+          { session, returnDocument: 'after' }
         );
 
         if (!result) {
-          // Oversold within the transaction — release the dangling reservation
           await Product.findByIdAndUpdate(
             item.product,
             { $inc: { reserved: -item.quantity } },
@@ -237,7 +168,6 @@ async function processSuccessfulPayment(order, nombaData = {}) {
         }
       }
 
-      // 5c. Increment promo code usage if applicable
       if (order.promoCode) {
         await PromoCode.findOneAndUpdate(
           { code: order.promoCode },
@@ -246,10 +176,8 @@ async function processSuccessfulPayment(order, nombaData = {}) {
         );
       }
 
-      // 5d. Commit transaction
       await session.commitTransaction();
 
-      // 5e. Log stock issues after commit (don't rollback for oversell, just alert)
       if (stockIssues.length) {
         logger.error(`STOCK ISSUE — order ${order.orderNumber} paid but oversold`, {
           orderId: order._id.toString(),
@@ -257,7 +185,6 @@ async function processSuccessfulPayment(order, nombaData = {}) {
         });
         // TODO: Send admin alert
       }
-
     } catch (err) {
       await session.abortTransaction();
       throw err;
@@ -265,7 +192,6 @@ async function processSuccessfulPayment(order, nombaData = {}) {
       session.endSession();
     }
 
-    // 6. Send confirmation email (async, non‑blocking)
     try {
       await sendEmail({
         to: order.customerEmail,
@@ -304,7 +230,6 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
   body('shippingAddress.city').trim().notEmpty().isLength({ max: 100 }),
   body('shippingAddress.state').trim().notEmpty().isLength({ max: 100 }),
   body('promoCode').optional({ checkFalsy: true }).isString().trim().toUpperCase(),
-  // Guest token: required for guest checkout, prevents email pollution
   body('guestToken').optional({ checkFalsy: true }).isString().isLength({ min: 32 }),
 ], async (req, res, next) => {
   const reservations = [];
@@ -345,7 +270,7 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
           $expr: { $gte: [{ $subtract: ['$stock', '$reserved'] }, item.quantity] },
         },
         { $inc: { reserved: item.quantity } },
-        { new: true }
+        { returnDocument: 'after' }
       );
       if (!result) {
         await releaseReservations(reservations);
@@ -386,25 +311,18 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
     if (req.user) {
       userId = req.user._id;
     } else {
-      // Guest checkout: require a valid guest token OR create one now
-      // For production: your frontend generates a secure guest token (JWT/UUID)
-      // and stores it in session/localStorage.
       if (!guestToken) {
         await releaseReservations(reservations);
         return next(new AppError('Guest token required for guest checkout', 400));
       }
-      // Verify guest token (simplified: check if it exists in Redis/DB)
       const tokenData = await redis.get(`guest:token:${guestToken}`);
       if (!tokenData) {
         await releaseReservations(reservations);
         return next(new AppError('Invalid or expired guest session', 401));
       }
-      // Create or fetch guest user tied to this token
       const guestEmail = customer.email.toLowerCase();
-      // Use token as unique identifier to avoid email pollution
       let guestUser = await User.findOne({ guestToken: guestToken });
       if (!guestUser) {
-        // Create new guest user
         const crypto = require('crypto');
         const tempPassword = crypto.randomBytes(32).toString('hex');
         guestUser = await User.create({
@@ -412,13 +330,12 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
           email: guestEmail,
           password: tempPassword,
           isGuest: true,
-          guestToken: guestToken, // store token for future lookups
+          guestToken: guestToken,
           isEmailVerified: false,
           isActive: true,
         });
         logger.info(`Guest user created with token: ${guestToken.slice(0, 8)}`);
       } else {
-        // Update email if changed
         if (guestUser.email !== guestEmail) {
           guestUser.email = guestEmail;
           await guestUser.save();
@@ -449,37 +366,30 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
 
     logger.info(`Order created: ${order.orderNumber} | ₦${toNaira(total).toFixed(2)}`);
 
-    // ── 7. Initiate Nomba checkout ────────────────────────────────
+    // ── 7. Initiate Monnify transaction ───────────────────────────
+    // paymentReference must be unique per attempt — Monnify rejects reuse.
+    // The order's Mongo _id is unique but if you ever retry checkout for the
+    // same order, generate a fresh reference (e.g. `${order._id}-${Date.now()}`).
+    const paymentReference = order._id.toString();
     let checkoutUrl;
     try {
-      const nombaRes = await nombaRequest('POST', '/checkout/orders', {
-        orderReference: order._id.toString(),
-        customerId: customer.email,
-        callbackUrl: `${process.env.BASE_URL}/webhooks/nomba`,
-        customer: {
-          email: customer.email,
-          name: customer.name,
-          phoneNumber: customer.phone,
-        },
-        order: {
-          orderReference: order._id.toString(),
-          customerId: customer.email,
-          callbackUrl: `${process.env.BASE_URL}/webhooks/nomba`,
-          amount: toNaira(total).toFixed(2),
-          currency: 'NGN',
-          description: `VitaCore Order #${order.orderNumber}`,
-        },
+      const monnifyRes = await initializeTransaction({
+        amount: toNaira(total), // Monnify expects a decimal Naira amount, not kobo
+        paymentReference,
+        customerName: customer.name,
+        customerEmail: customer.email,
+        paymentDescription: `Winners Health Order #${order.orderNumber}`,
+        redirectUrl: `${process.env.FRONTEND_URL}/order-confirmation?ref=${paymentReference}`,
       });
-      checkoutUrl = nombaRes.data?.data?.checkoutLink;
-      order.nombaReference = nombaRes.data?.data?.orderReference;
+      checkoutUrl = monnifyRes.checkoutUrl;
+      order.monnifyReference = monnifyRes.paymentReference || paymentReference;
       await order.save();
-    } catch (nombaErr) {
-      // Cleanup: delete order + release reservations
+    } catch (monnifyErr) {
       await Promise.allSettled([
         Order.findByIdAndDelete(order._id),
         releaseReservations(reservations),
       ]);
-      logger.error('Nomba checkout failed:', nombaErr.message);
+      logger.error('Monnify checkout failed:', monnifyErr.message);
       return next(new AppError('Payment gateway unavailable. Please try again.', 503));
     }
 
@@ -489,7 +399,6 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
       orderNumber: order.orderNumber,
       checkoutUrl,
       total: toNaira(total),
-      // Return guest token to frontend for future requests
       guestToken: isGuest ? guestToken : undefined,
     });
   } catch (err) {
@@ -506,7 +415,7 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
     const order = await Order.findOne({
       $or: [
         ...(/^[a-f\d]{24}$/i.test(ref) ? [{ _id: ref }] : []),
-        { nombaReference: ref },
+        { monnifyReference: ref },
         { orderNumber: ref },
       ],
     });
@@ -516,18 +425,26 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
       return next(new AppError('Not authorized', 403));
     }
 
-    // If still pending, poll Nomba but with a lock
-    if (order.paymentStatus === 'pending') {
+    // If still pending, poll Monnify — but with a lock, and only act on
+    // PAID/OVERPAID here. Everything else (FAILED, EXPIRED, REVERSED,
+    // REJECTED_PAYMENT) is handled authoritatively by the webhook so we
+    // don't duplicate that state machine in two places.
+    if (order.paymentStatus === 'pending' && order.monnifyReference) {
       const lockKey = `status:poll:${order._id}`;
       const locked = await acquireLock(lockKey, 10);
       if (locked) {
         try {
-          const nombaRes = await nombaRequest('GET', `/checkout/orders/${order._id}`);
-          if (nombaRes.data?.data?.status === 'successful') {
-            await processSuccessfulPayment(order, nombaRes.data.data);
+          const verified = await verifyTransaction(order.monnifyReference);
+          if (verified.paymentStatus === 'PAID' || verified.paymentStatus === 'OVERPAID') {
+            await processSuccessfulPayment(order, {
+              transactionReference: verified.transactionReference,
+              paymentMethod: verified.paymentMethod,
+              amountPaidNaira: verified.amountPaid,
+              currency: 'NGN',
+            });
           }
         } catch (err) {
-          logger.warn('Nomba status poll failed:', err.message);
+          logger.warn('Monnify status poll failed:', err.message);
         } finally {
           await releaseLock(lockKey);
         }
@@ -560,15 +477,6 @@ async function releaseAbandonedReservations() {
     await order.save();
     logger.info(`Abandoned order expired: ${order.orderNumber}`);
   }
-}
-
-// ── NOMBA AMOUNT NORMALISER ──────────────────────────────────────
-function normalizeNombaAmount(raw) {
-  if (raw === undefined || raw === null) return { valid: false, kobo: 0 };
-  const num = Number(raw);
-  if (!Number.isFinite(num)) return { valid: false, kobo: 0 };
-  // If > 1000 → Kobo; else → Naira
-  return { valid: true, kobo: num > 1000 ? Math.round(num) : Math.round(num * 100) };
 }
 
 // ── EXPORTS ────────────────────────────────────────────────────────
