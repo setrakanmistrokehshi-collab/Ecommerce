@@ -15,7 +15,7 @@ const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
 const { getRedisClient } = require('../config/redis');
-const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
+const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
 const router = express.Router();
 const redis = getRedisClient();
