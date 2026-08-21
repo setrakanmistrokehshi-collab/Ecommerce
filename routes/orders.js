@@ -4,7 +4,7 @@ const express = require('express');
 const Order = require('../models/Order');
 const { protect, restrictTo } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
-const webhooksMonnify = require('./webhooks'); // adjust path to match your actual filename
+const webhooksMonnify = require('../routes/webhooks'); // adjust path to match your actual filename
 const { verifyTransaction, evaluatePaymentAmount } = webhooksMonnify;
 
 const router = express.Router();

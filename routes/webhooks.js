@@ -1,91 +1,33 @@
 'use strict';
 
 const express = require('express');
-const axios = require('axios');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const cron = require('node-cron');
 const { Redis } = require('ioredis');
 
 const Order = require('../models/Order');
 const Product = require('../models/Product');
-const { processSuccessfulPayment } = require('./payments'); // same folder
-const { sendPaymentRejectedEmail } = require("../utils/email"); // adjust path if this lives elsewhere
+const User = require('../models/User');
+const EmailLog = require('../models/Emailog');
+const { processSuccessfulPayment } = require('./payments'); // still fine — one-directional now
+const { sendPaymentRejectedEmail } = require('../utils/email');
 const logger = require('../utils/logger');
 
+const { verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
+
 // ── Redis client ──────────────────────────────────────────────────
-
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
- 
-  maxRetriesPerRequest: 2,
-  enableOfflineQueue: false, // reject immediately instead of buffering while disconnected
-  retryStrategy(times) {
-    return Math.min(times * 200, 5000); // capped backoff, keeps retrying in the background
-  },
-});
-
-redis.on('error', (err) => {
-  logger.error('❌ Redis connection error', { error: err.message });
-});
-
-redis.on('ready', () => {
-  logger.info('✅ Redis connected');
-});
+const { getRedisClient } = require('../config/redis');
+const redis = getRedisClient(); 
 
 const router = express.Router();
 
 // ── CONFIGURATION ────────────────────────────────────────────────
-// NOTE: base URL differs by environment — this was wrong in the snippet
-// you had ("https://monnify.com"). Sandbox and live are separate hosts.
-const MONNIFY_BASE_URL =
-  process.env.MONNIFY_BASE_URL ||
-  (process.env.NODE_ENV === 'production'
-    ? 'https://api.monnify.com'
-    : 'https://sandbox.monnify.com');
-
-const MONNIFY_API_KEY = process.env.MONNIFY_API_KEY;
 const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
-const MONNIFY_CONTRACT_CODE = process.env.MONNIFY_CONTRACT_CODE;
-
-// Monnify's documented webhook source IP. Whitelisting this is one of
-// their own recommended practices, alongside signature verification.
 const MONNIFY_WEBHOOK_IP = process.env.MONNIFY_WEBHOOK_IP || '35.242.133.146';
-
 const ENFORCE_SIGNATURE = process.env.NODE_ENV === 'production';
 const ENFORCE_IP_WHITELIST = process.env.MONNIFY_ENFORCE_IP_WHITELIST !== 'false';
 
-// ── ACCESS TOKEN (cached — tokens are valid ~1hr, don't re-auth every call) ─
-let cachedToken = null;
-let cachedTokenExpiry = 0;
-
-async function getMonnifyAccessToken() {
-  if (cachedToken && Date.now() < cachedTokenExpiry) {
-    return cachedToken;
-  }
-
-  try {
-    const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString('base64');
-    const response = await axios.post(
-      `${MONNIFY_BASE_URL}/api/v1/auth/login`,
-      {},
-      { headers: { Authorization: `Basic ${credentials}` }, timeout: 15000 }
-    );
-
-    const { accessToken, expiresIn } = response.data.responseBody;
-    cachedToken = accessToken;
-    // Refresh a little early (90s buffer) rather than exactly on expiry.
-    cachedTokenExpiry = Date.now() + (Math.max(expiresIn - 90, 30) * 1000);
-    return cachedToken;
-  } catch (error) {
-    logger.error('❌ Failed to fetch Monnify access token', { error: error.message });
-    cachedToken = null;
-    cachedTokenExpiry = 0;
-    return null;
-  }
-}
-
-// ── SIGNATURE VERIFICATION ──────────────────────────────────────
-
+// ── SIGNATURE VERIFICATION (unchanged) ────────────────────────────
 function verifyMonnifySignature(rawBody, signature) {
   if (!signature || typeof signature !== 'string') return false;
   if (!MONNIFY_SECRET_KEY) {
@@ -100,10 +42,7 @@ function verifyMonnifySignature(rawBody, signature) {
   }
 
   const bodyString = rawBody.toString('utf8');
-  const expected = crypto
-    .createHash('sha512')
-    .update(MONNIFY_SECRET_KEY + bodyString)
-    .digest('hex');
+  const expected = crypto.createHash('sha512').update(MONNIFY_SECRET_KEY + bodyString).digest('hex');
 
   if (!/^[a-f0-9]{128}$/i.test(signature)) return false;
 
@@ -115,44 +54,34 @@ function verifyMonnifySignature(rawBody, signature) {
 }
 
 function isFromMonnifyIp(req) {
-
   const ip = (req.ip || '').replace('::ffff:', '');
   return ip === MONNIFY_WEBHOOK_IP;
 }
 
-// ── REDIS LOCK / IDEMPOTENCY HELPERS ────────────────────────────
-// All four fail SAFE if Redis is unreachable rather than throwing
-// uncaught and killing webhook processing:
+// ── REDIS LOCK / IDEMPOTENCY HELPERS (unchanged, fail-safe) ──────
 async function acquireLock(key, ttlSeconds = 30) {
   try {
     const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
     return result === 'OK';
   } catch (err) {
-    logger.error(`⚠️ Redis acquireLock failed for ${key} — proceeding without lock`, {
-      error: err.message,
-    });
-    return true; // fail open
+    logger.error(`⚠️ Redis acquireLock failed for ${key} — proceeding without lock`, { error: err.message });
+    return true;
   }
 }
-
 async function releaseLock(key) {
   await redis.del(key).catch((err) =>
     logger.warn(`Redis releaseLock failed for ${key} (will expire via TTL)`, { error: err.message })
   );
 }
-
 async function isEventProcessed(eventId) {
   if (!eventId) return false;
   try {
     return (await redis.get(`webhook:processed:${eventId}`)) === '1';
   } catch (err) {
-    logger.error(`⚠️ Redis isEventProcessed failed for ${eventId} — assuming not processed`, {
-      error: err.message,
-    });
-    return false; // fail open — rely on the MongoDB-level guard instead
+    logger.error(`⚠️ Redis isEventProcessed failed for ${eventId} — assuming not processed`, { error: err.message });
+    return false;
   }
 }
-
 async function markEventProcessed(eventId, ttlSeconds = 86400) {
   if (!eventId) return;
   await redis.set(`webhook:processed:${eventId}`, '1', 'EX', ttlSeconds).catch((err) =>
@@ -160,79 +89,19 @@ async function markEventProcessed(eventId, ttlSeconds = 86400) {
   );
 }
 
-// ── ORDER LOOKUP ─────────────────────────────────────────────────
-// order.monnifyReference matches Order.js — renamed from nombaReference.
+// ── ORDER LOOKUP (unchanged) ──────────────────────────────────────
 async function findOrderByReference(paymentReference) {
   if (!paymentReference) return null;
   const ref = String(paymentReference).trim();
   if (!ref) return null;
-
   const conditions = [{ monnifyReference: ref }];
-  if (/^[a-f\d]{24}$/i.test(ref)) {
-    conditions.push({ _id: ref });
-  }
+  if (/^[a-f\d]{24}$/i.test(ref)) conditions.push({ _id: ref });
   return Order.findOne({ $or: conditions });
-}
-
-// ── SERVER-SIDE VERIFICATION (authoritative — never trust the webhook body) ─
-async function verifyTransaction(paymentReference) {
-  const accessToken = await getMonnifyAccessToken();
-  if (!accessToken) {
-    throw new Error('Could not obtain Monnify access token for verification');
-  }
-
-  const response = await axios.get(
-    `${MONNIFY_BASE_URL}/api/v2/merchant/transactions/query`,
-    {
-      params: { paymentReference },
-      headers: { Authorization: `Bearer ${accessToken}` },
-      timeout: 15000,
-    }
-  );
-
-  const body = response.data.responseBody;
-  return {
-    paymentStatus: body.paymentStatus, // PAID | PARTIALLY_PAID | PENDING | OVERPAID | FAILED | REVERSED | EXPIRED
-    amountPaid: Number(body.amountPaid || 0), // Naira, decimal — NOT kobo
-    totalPayable: Number(body.totalPayable || 0),
-    settlementAmount: Number(body.settlementAmount || 0),
-    paymentMethod: body.paymentMethod,
-    transactionReference: body.transactionReference,
-    paymentSourceInformation: body.paymentSourceInformation,
-  };
-}
-
-// ── OVERPAYMENT / UNDERPAYMENT GUARD ────────────────────────────
-// This is the function that decides whether an amount actually satisfies
-// an order. Called against the *verified* amount from verifyTransaction(),
-// never against the raw webhook payload.
-//
-// order.total is assumed stored in kobo (matches the rest of this codebase).
-// Monnify reports amountPaid in Naira as a decimal, so it's converted here.
-//
-// Returns one of: 'exact' | 'overpaid' | 'underpaid' | 'invalid'
-function evaluatePaymentAmount({ expectedKobo, amountPaidNaira }) {
-  if (!Number.isFinite(expectedKobo) || expectedKobo <= 0) {
-    return { verdict: 'invalid', reason: 'Invalid expected amount on order' };
-  }
-
-  const paidKobo = Math.round(Number(amountPaidNaira) * 100);
-  if (!Number.isFinite(paidKobo)) {
-    return { verdict: 'invalid', reason: `Unparseable amountPaid: ${amountPaidNaira}` };
-  }
-  const diff = paidKobo - expectedKobo;
-  if (Math.abs(diff) <= 1) {
-    return { verdict: 'exact', paidKobo, expectedKobo, diffKobo: 0 };
-  }
-  if (diff < 0) {
-    return { verdict: 'underpaid', paidKobo, expectedKobo, shortfallKobo: -diff };
-  }
-  return { verdict: 'overpaid', paidKobo, expectedKobo, excessKobo: diff };
 }
 
 // ── WEBHOOK ENDPOINT ─────────────────────────────────────────────
 router.post('/monnify', async (req, res) => {
-  const rawBody = req.body; // must be a Buffer
+  const rawBody = req.body;
   const signature = req.headers['monnify-signature'];
 
   if (ENFORCE_IP_WHITELIST && !isFromMonnifyIp(req)) {
@@ -240,10 +109,6 @@ router.post('/monnify', async (req, res) => {
     return res.status(401).json({ received: false, error: 'unauthorized origin' });
   }
 
-  // ── 2. Signature verification ───────────────────────────────────
-  // Required in production. Sandbox never sends this header, so we skip
-  // strictly on signature there — verifyTransaction() below is the real
-  // gate in that case.
   if (ENFORCE_SIGNATURE) {
     if (!verifyMonnifySignature(rawBody, signature)) {
       logger.error('Monnify webhook: signature verification FAILED', {
@@ -253,11 +118,9 @@ router.post('/monnify', async (req, res) => {
       return res.status(401).json({ received: false, error: 'invalid signature' });
     }
   } else if (signature && !verifyMonnifySignature(rawBody, signature)) {
-   
     logger.warn('Monnify webhook: signature present but did not verify (non-production)');
   }
 
-  // ── 3. Parse payload ─────────────────────────────────────────────
   let payload;
   try {
     payload = Buffer.isBuffer(rawBody) ? JSON.parse(rawBody.toString('utf8')) : rawBody;
@@ -266,39 +129,60 @@ router.post('/monnify', async (req, res) => {
     return res.status(400).json({ received: false, error: 'invalid payload' });
   }
 
-  // across versions before (see their changelog).
   const eventType = payload.eventType || payload.event;
   const eventData = payload.eventData || payload.data || {};
   const paymentReference = eventData.paymentReference;
   const transactionReference = eventData.transactionReference;
 
-  if (!paymentReference) {
+  // Refund events key off transactionReference, not paymentReference — a
+  // refund payload may not carry paymentReference at all, so don't reject
+  // it here the way we do for collection events below.
+  const isRefundEvent = eventType === 'SUCCESSFUL_REFUND' || eventType === 'FAILED_REFUND';
+
+  if (!paymentReference && !isRefundEvent) {
     logger.warn('Monnify webhook received without paymentReference', { eventType });
     return res.json({ received: true, warning: 'missing paymentReference' });
   }
 
-  // ── 4. Idempotency ────────────────────────────────────────────────
   const eventId = transactionReference || `${eventType}:${paymentReference}`;
   if (await isEventProcessed(eventId)) {
     logger.info(`Webhook ${eventId} already processed — ignoring duplicate`);
     return res.json({ received: true, status: 'duplicate' });
   }
 
-  // ── 5. Distributed lock per order ───────────────────────────────
-  const lockKey = `webhook:lock:${paymentReference}`;
+  const lockKey = `webhook:lock:${paymentReference || transactionReference}`;
   const locked = await acquireLock(lockKey, 60);
   if (!locked) {
-    logger.warn(`Webhook: another instance already processing ${paymentReference}`);
+    logger.warn(`Webhook: another instance already processing ${lockKey}`);
     return res.json({ received: true, status: 'already_processing' });
   }
 
-  // ── 6. Acknowledge immediately — Monnify retries every 5 min up to
-  // 12 times if it doesn't get a prompt 200. ──────────────────────
   res.json({ received: true });
 
   setImmediate(async () => {
     try {
-      logger.info(`Monnify webhook processing: ${eventType} | ref: ${paymentReference}`);
+      logger.info(`Monnify webhook processing: ${eventType} | ref: ${paymentReference || transactionReference}`);
+
+      // ── REFUND EVENTS — handled directly, bypassing verifyTransaction. ──
+      // This was the missing branch: refund eventTypes were previously
+      // falling through to verifyTransaction()/paymentStatus, which almost
+      // never resolves to REVERSED for a refund, so handleReversal() never
+      // ran and stock was never rolled back.
+      if (isRefundEvent) {
+        if (eventType === 'FAILED_REFUND') {
+          const targetOrder = await Order.findOne({ transactionId: transactionReference });
+          if (targetOrder) {
+            targetOrder.addStatus('refund_failed', `Refund failed: ${eventData.refundReason || 'unspecified'}`);
+            await targetOrder.save();
+          }
+        } else {
+          await handleReversal(transactionReference, {
+            amountPaid: eventData.refundAmount ?? eventData.amountPaid,
+          });
+        }
+        await markEventProcessed(eventId);
+        return;
+      }
 
       const order = await findOrderByReference(paymentReference);
       if (!order) {
@@ -311,10 +195,9 @@ router.post('/monnify', async (req, res) => {
         return;
       }
 
-      // ── Explicit REJECTED_PAYMENT: Monnify already returned the funds.
       if (eventType === 'REJECTED_PAYMENT') {
-        order.paymentStatus = 'rejected'; // valid enum value on Order.js
-        order.addPaymentNote('Monnify rejected an over/under payment and returned funds to sender');
+        order.paymentStatus = 'rejected';
+        order.addStatus('rejected', 'Monnify rejected an over/under payment and returned funds to sender');
         await order.save();
         logger.warn(`Payment rejected by Monnify gateway for ${order.orderNumber}`);
 
@@ -332,15 +215,13 @@ router.post('/monnify', async (req, res) => {
         }).catch((err) =>
           logger.error(`Failed to send payment-rejected email for ${order.orderNumber}: ${err.message}`)
         );
-
         return;
       }
 
       if (eventType === 'FAILED_TRANSACTION' || eventType === 'FAILED_COLLECTION') {
         if (order.paymentStatus === 'pending') {
           order.paymentStatus = 'failed';
-          order.addPaymentNote('Payment failed (Monnify)');
-        
+          order.addStatus('failed', 'Payment failed (Monnify)');
           await order.save();
         }
         return;
@@ -355,7 +236,7 @@ router.post('/monnify', async (req, res) => {
 
       if (evaluation.verdict === 'invalid') {
         order.paymentStatus = 'discrepancy';
-        order.addPaymentNote(evaluation.reason);
+        order.addStatus('discrepancy', evaluation.reason);
         await order.save();
         logger.error(`Invalid amount for ${order.orderNumber}`, evaluation);
         return;
@@ -368,7 +249,8 @@ router.post('/monnify', async (req, res) => {
         case 'OVERPAID': {
           if (evaluation.verdict === 'underpaid') {
             order.paymentStatus = 'discrepancy';
-            order.addPaymentNote(
+            order.addStatus(
+              'discrepancy',
               `Status ${verified.paymentStatus} but verified amount (₦${verified.amountPaid}) is below expected`
             );
             await order.save();
@@ -382,14 +264,14 @@ router.post('/monnify', async (req, res) => {
           if (evaluation.verdict === 'overpaid') {
             order.overpaymentFlag = true;
             order.overpaidAmount = evaluation.excessKobo;
-            order.addPaymentNote(
+            order.addStatus(
+              'overpaid_flagged',
               `Overpaid by ₦${(evaluation.excessKobo / 100).toFixed(2)} — flagged for refund/credit review`
             );
-            // TODO: trigger refund-of-excess or wallet-credit workflow here.
             logger.warn(`Order ${order.orderNumber} overpaid by ${evaluation.excessKobo} kobo`);
           }
 
-          await order.save(); // persist paymentMethod/overpayment fields before fulfilment runs
+          await order.save();
 
           await processSuccessfulPayment(order, {
             transactionReference: verified.transactionReference,
@@ -400,14 +282,13 @@ router.post('/monnify', async (req, res) => {
         }
 
         case 'PARTIALLY_PAID': {
-          order.paymentStatus = 'flagged_underpaid'; // valid enum value, order stays unfulfilled
-          order.addPaymentNote(
+          order.paymentStatus = 'flagged_underpaid';
+          order.addStatus(
+            'flagged_underpaid',
             `Underpaid by ₦${(evaluation.shortfallKobo / 100).toFixed(2)} — do not fulfil`
           );
           await order.save();
           logger.warn(`Order ${order.orderNumber} underpaid, shortfall ${evaluation.shortfallKobo} kobo`);
-          // TODO: trigger customer notification requesting the balance,
-          // or auto-refund the partial amount depending on your polic
           break;
         }
 
@@ -418,16 +299,15 @@ router.post('/monnify', async (req, res) => {
         case 'FAILED':
           if (order.paymentStatus === 'pending') {
             order.paymentStatus = 'failed';
-            order.addPaymentNote('Payment failed (verified)');
+            order.addStatus('failed', 'Payment failed (verified)');
             await order.save();
           }
           break;
 
         case 'EXPIRED':
-        
           if (order.paymentStatus === 'pending') {
             order.paymentStatus = 'expired';
-            order.addPaymentNote('Checkout session expired (verified)');
+            order.addStatus('expired', 'Checkout session expired (verified)');
             await order.save();
           }
           break;
@@ -437,9 +317,7 @@ router.post('/monnify', async (req, res) => {
           break;
 
         default:
-          logger.info(`Unhandled verified paymentStatus: ${verified.paymentStatus}`, {
-            paymentReference,
-          });
+          logger.info(`Unhandled verified paymentStatus: ${verified.paymentStatus}`, { paymentReference });
       }
 
       await markEventProcessed(eventId);
@@ -456,7 +334,8 @@ router.post('/monnify', async (req, res) => {
   });
 });
 
-// ── REFUND / REVERSAL HANDLING (same stock-rollback pattern as before) ─
+// ── REFUND / REVERSAL HANDLING (unchanged logic, now also called
+// directly from the SUCCESSFUL_REFUND branch above) ──────────────
 async function handleReversal(transactionReference, verified) {
   if (!transactionReference) {
     logger.error('Reversal event missing transactionReference');
@@ -486,7 +365,7 @@ async function handleReversal(transactionReference, verified) {
       );
     }
 
-    targetOrder.paymentStatus = 'refunded'; // valid on both paymentStatus AND status enums
+    targetOrder.paymentStatus = 'refunded';
     targetOrder.addStatus(
       'refunded',
       `Refund/reversal processed: ₦${verified.amountPaid?.toLocaleString?.() ?? verified.amountPaid}`
@@ -504,7 +383,8 @@ async function handleReversal(transactionReference, verified) {
   }
 }
 
-// ── BACKGROUND RECONCILIATION ──
+// ── BACKGROUND RECONCILIATION (unchanged, still imports from the
+// shared service rather than defining its own copies) ────────────
 async function syncStuckPayments() {
   const staleCutoff = new Date(Date.now() - 5 * 60 * 1000);
 
@@ -521,7 +401,7 @@ async function syncStuckPayments() {
   for (const order of pendingOrders) {
     const lockKey = `webhook:lock:${order.monnifyReference}`;
     const locked = await acquireLock(lockKey, 60);
-    if (!locked) continue; // a webhook is actively handling this one right now
+    if (!locked) continue;
 
     try {
       const verified = await verifyTransaction(order.monnifyReference);
@@ -543,7 +423,8 @@ async function syncStuckPayments() {
         if (evaluation.verdict === 'overpaid') {
           order.overpaymentFlag = true;
           order.overpaidAmount = evaluation.excessKobo;
-          order.addPaymentNote(
+          order.addStatus(
+            'overpaid_flagged',
             `Overpaid by ₦${(evaluation.excessKobo / 100).toFixed(2)} (recovered via reconciliation) — flagged for refund/credit review`
           );
         }
@@ -557,19 +438,18 @@ async function syncStuckPayments() {
         logger.info(`🎉 Recovered stuck payment: ${order.orderNumber}`);
       } else if (verified.paymentStatus === 'PARTIALLY_PAID' || evaluation.verdict === 'underpaid') {
         order.paymentStatus = 'flagged_underpaid';
-        order.addPaymentNote('Recovered via reconciliation sync — underpaid');
+        order.addStatus('flagged_underpaid', 'Recovered via reconciliation sync — underpaid');
         await order.save();
         logger.warn(`⚠️ Reconciliation found underpayment for ${order.orderNumber}`);
       } else if (verified.paymentStatus === 'FAILED') {
         order.paymentStatus = 'failed';
-        order.addPaymentNote('Payment failed (reconciliation)');
+        order.addStatus('failed', 'Payment failed (reconciliation)');
         await order.save();
       } else if (verified.paymentStatus === 'EXPIRED') {
-        order.paymentStatus = 'expired'; // real enum value, shared with releaseAbandonedReservations()
-        order.addPaymentNote('Payment expired (reconciliation)');
+        order.paymentStatus = 'expired';
+        order.addStatus('expired', 'Payment expired (reconciliation)');
         await order.save();
       }
-      // PENDING / REJECTED_PAYMENT etc. — leave as-is, next sync pass will re-check.
     } catch (error) {
       logger.error(`🚨 Reconciliation error for ${order.orderNumber}`, { error: error.message });
     } finally {
@@ -578,13 +458,12 @@ async function syncStuckPayments() {
   }
 }
 
+const cron = require('node-cron');
 cron.schedule('*/5 * * * *', () => {
-  syncStuckPayments().catch((err) =>
-    logger.error('Reconciliation cron crashed', { error: err.message })
-  );
+  syncStuckPayments().catch((err) => logger.error('Reconciliation cron crashed', { error: err.message }));
 });
 
-// ── BREVO EMAIL WEBHOOK (unchanged) ──────────────────────────────
+// ── BREVO EMAIL WEBHOOK — now with User/EmailLog actually imported ─
 router.post('/brevo', express.json(), async (req, res) => {
   const { event, email, ['message-id']: messageId, tag, tags } = req.body;
 
@@ -604,5 +483,3 @@ router.post('/brevo', express.json(), async (req, res) => {
 });
 
 module.exports = router;
-module.exports.verifyTransaction = verifyTransaction;
-module.exports.evaluatePaymentAmount = evaluatePaymentAmount;

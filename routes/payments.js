@@ -3,6 +3,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const { Redis } = require('ioredis');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -13,14 +14,11 @@ const { AppError } = require('../middleware/errorHandler');
 const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
-const {
-  initializeTransaction,
-  verifyTransaction,
-  evaluatePaymentAmount,
-} = require('../routes/webhooks'); 
+const { getRedisClient } = require('../config/redis');
+const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
 
 const router = express.Router();
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+const redis = getRedisClient();
 
 // ── UTILITY: KOBO ↔ NAIRA ────────────────────────────────────────
 function toKobo(naira) {
@@ -78,6 +76,7 @@ async function releaseReservations(reservations = []) {
 
 // ── REDIS LOCK HELPER ─────────────────────────────────────────────
 async function acquireLock(key, ttlSeconds = 30) {
+  
   const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
   return result === 'OK';
 }
@@ -323,7 +322,6 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
       const guestEmail = customer.email.toLowerCase();
       let guestUser = await User.findOne({ guestToken: guestToken });
       if (!guestUser) {
-        const crypto = require('crypto');
         const tempPassword = crypto.randomBytes(32).toString('hex');
         guestUser = await User.create({
           name: customer.name || 'Guest',
@@ -368,8 +366,11 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
 
     // ── 7. Initiate Monnify transaction ───────────────────────────
     // paymentReference must be unique per attempt — Monnify rejects reuse.
-    // The order's Mongo _id is unique but if you ever retry checkout for the
-    // same order, generate a fresh reference (e.g. `${order._id}-${Date.now()}`).
+    // Fine as-is for a first attempt since order._id is freshly minted
+    // above. If you ever add a "retry payment on an existing pending
+    // order" endpoint, do NOT reuse this same reference on retry —
+    // append a timestamp/nonce, e.g. `${order._id}-${Date.now()}`, or
+    // Monnify will reject the init call as a duplicate reference.
     const paymentReference = order._id.toString();
     let checkoutUrl;
     try {

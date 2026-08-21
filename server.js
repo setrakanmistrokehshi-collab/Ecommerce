@@ -68,9 +68,9 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "https://checkout.nomba.com"],
-        frameSrc: ["'self'", "https://checkout.nomba.com"],
-        connectSrc: ["'self'", "https://api.nomba.com"],
+        scriptSrc: ["'self'", "https://api.monnify.com"],
+        frameSrc: ["'self'", "https://api.monnify.com"],
+        connectSrc: [ "'self'",process.env.NODE_ENV === "production" ? "https://api.monnify.com" : "https://sandbox.monnify.com",],
         imgSrc: ["'self'", "data:", "https:"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
@@ -115,7 +115,7 @@ app.use(compression());
 app.use(limitQueryString(2048));
 
 // ── BODY PARSERS (hpp must come AFTER these) ──────────────────────
-app.use("/webhooks", express.raw({ type: "application/json", limit: "150kb" }));
+app.use("/api/v1/webhooks/monnify", express.raw({ type: "application/json", limit: "150kb" }));
 app.use("/api/v1/admin", express.json({ limit: "50kb" }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
