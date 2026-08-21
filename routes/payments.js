@@ -218,8 +218,18 @@ async function processSuccessfulPayment(order, verifiedData = {}) {
 }
 
 // ── CHECKOUT ENDPOINT ─────────────────────────────────────────────
-router.post('/checkout', optionalAuth, paymentLimiter, [
-  body('items').isArray({ min: 1, max: 20 }),
+router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
+  // TEMPORARY — remove once the payload-shape issue is confirmed/fixed.
+  // Logs exactly what the client sent, before express-validator runs,
+  // so you can see whether `customer` is missing keys vs. sending empty
+  // strings vs. never arriving at all.
+  logger.info('Checkout payload received', {
+    contentType: req.headers['content-type'],
+    body: req.body,
+  });
+  next();
+}, [
+ body('items').isArray({ min: 1, max: 20 }),
   body('items.*.productId').notEmpty(),
   body('items.*.quantity').isInt({ min: 1, max: 99 }),
   body('customer.email').isEmail().normalizeEmail(),
@@ -228,16 +238,14 @@ router.post('/checkout', optionalAuth, paymentLimiter, [
   body('shippingAddress.street').trim().notEmpty().isLength({ max: 200 }),
   body('shippingAddress.city').trim().notEmpty().isLength({ max: 100 }),
   body('shippingAddress.state').trim().notEmpty().isLength({ max: 100 }),
-  body('promoCode').optional({ checkFalsy: true }).isString().trim().toUpperCase(),
-  body('guestToken').optional({ checkFalsy: true }).isString().isLength({ min: 32 }),
+  body('promoCode').optional({ checkFalsy: true }).isString().trim().toUpperCase,
 ], async (req, res, next) => {
   const reservations = [];
   let order = null;
-
+ 
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
-
     const { items, customer, shippingAddress, promoCode, guestToken } = req.body;
 
     // ── 1. Validate products ──────────────────────────────────────
