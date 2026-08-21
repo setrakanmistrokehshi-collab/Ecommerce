@@ -133,10 +133,6 @@ router.post('/monnify', async (req, res) => {
   const eventData = payload.eventData || payload.data || {};
   const paymentReference = eventData.paymentReference;
   const transactionReference = eventData.transactionReference;
-
-  // Refund events key off transactionReference, not paymentReference — a
-  // refund payload may not carry paymentReference at all, so don't reject
-  // it here the way we do for collection events below.
   const isRefundEvent = eventType === 'SUCCESSFUL_REFUND' || eventType === 'FAILED_REFUND';
 
   if (!paymentReference && !isRefundEvent) {
@@ -163,11 +159,6 @@ router.post('/monnify', async (req, res) => {
     try {
       logger.info(`Monnify webhook processing: ${eventType} | ref: ${paymentReference || transactionReference}`);
 
-      // ── REFUND EVENTS — handled directly, bypassing verifyTransaction. ──
-      // This was the missing branch: refund eventTypes were previously
-      // falling through to verifyTransaction()/paymentStatus, which almost
-      // never resolves to REVERSED for a refund, so handleReversal() never
-      // ran and stock was never rolled back.
       if (isRefundEvent) {
         if (eventType === 'FAILED_REFUND') {
           const targetOrder = await Order.findOne({ transactionId: transactionReference });
@@ -459,8 +450,15 @@ async function syncStuckPayments() {
 }
 
 const cron = require('node-cron');
-cron.schedule('*/5 * * * *', () => {
-  syncStuckPayments().catch((err) => logger.error('Reconciliation cron crashed', { error: err.message }));
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    await syncStuckPayments();
+  } catch (err) {
+    logger.error('Reconciliation cron crashed', {
+      error: err.message,
+      code: err.code,  
+    });
+  }
 });
 
 // ── BREVO EMAIL WEBHOOK — now with User/EmailLog actually imported ─

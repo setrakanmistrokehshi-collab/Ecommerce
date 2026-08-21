@@ -218,17 +218,7 @@ async function processSuccessfulPayment(order, verifiedData = {}) {
 }
 
 // ── CHECKOUT ENDPOINT ─────────────────────────────────────────────
-router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
-  // TEMPORARY — remove once the payload-shape issue is confirmed/fixed.
-  // Logs exactly what the client sent, before express-validator runs,
-  // so you can see whether `customer` is missing keys vs. sending empty
-  // strings vs. never arriving at all.
-  logger.info('Checkout payload received', {
-    contentType: req.headers['content-type'],
-    body: req.body,
-  });
-  next();
-}, [
+router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
  body('items').isArray({ min: 1, max: 20 }),
   body('items.*.productId').notEmpty(),
   body('items.*.quantity').isInt({ min: 1, max: 99 }),
@@ -372,13 +362,7 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
 
     logger.info(`Order created: ${order.orderNumber} | ₦${toNaira(total).toFixed(2)}`);
 
-    // ── 7. Initiate Monnify transaction ───────────────────────────
-    // paymentReference must be unique per attempt — Monnify rejects reuse.
-    // Fine as-is for a first attempt since order._id is freshly minted
-    // above. If you ever add a "retry payment on an existing pending
-    // order" endpoint, do NOT reuse this same reference on retry —
-    // append a timestamp/nonce, e.g. `${order._id}-${Date.now()}`, or
-    // Monnify will reject the init call as a duplicate reference.
+    // ── 7. Initiate Monnify transaction ────────────
     const paymentReference = order._id.toString();
     let checkoutUrl;
     try {
@@ -434,10 +418,6 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
       return next(new AppError('Not authorized', 403));
     }
 
-    // If still pending, poll Monnify — but with a lock, and only act on
-    // PAID/OVERPAID here. Everything else (FAILED, EXPIRED, REVERSED,
-    // REJECTED_PAYMENT) is handled authoritatively by the webhook so we
-    // don't duplicate that state machine in two places.
     if (order.paymentStatus === 'pending' && order.monnifyReference) {
       const lockKey = `status:poll:${order._id}`;
       const locked = await acquireLock(lockKey, 10);
@@ -477,14 +457,24 @@ async function releaseAbandonedReservations() {
     createdAt: { $lt: cutoff },
   });
 
+  if (stale.length === 0) return;
+
+  logger.info(`🧹 Releasing reservations for ${stale.length} abandoned order(s)`);
+
   for (const order of stale) {
-    await releaseReservations(
-      order.items.map(i => ({ productId: i.product, quantity: i.quantity }))
-    );
-    order.paymentStatus = 'expired';
-    order.addStatus('cancelled', 'Checkout session expired');
-    await order.save();
-    logger.info(`Abandoned order expired: ${order.orderNumber}`);
+    try {
+      await releaseReservations(
+        order.items.map((i) => ({ productId: i.product, quantity: i.quantity }))
+      );
+
+      order.paymentStatus = 'expired';
+      order.addStatus('cancelled', 'Checkout session expired');
+      await order.save();
+
+      logger.info(`Abandoned order expired: ${order.orderNumber}`);
+    } catch (err) {
+      logger.error(`Failed to expire order ${order.orderNumber}`, { error: err.message });
+    }
   }
 }
 
