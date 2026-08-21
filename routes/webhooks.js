@@ -13,7 +13,7 @@ const { processSuccessfulPayment } = require('./payments'); // still fine — on
 const { sendPaymentRejectedEmail } = require('../utils/email');
 const logger = require('../utils/logger');
 
-const { verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
+const { verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
 // ── Redis client ──────────────────────────────────────────────────
 const { getRedisClient } = require('../config/redis');
