@@ -70,7 +70,7 @@ app.use(
         defaultSrc: ["'self'"],
        scriptSrc: ["'self'"],
         frameSrc: ["'self'"],
-        connectSrc: ["'self'",(process.env.BACKEND_URL ? [process.env.BACKEND_URL] : [])],
+        connectSrc: ["'self'",(process.env.BASE_URL ? [process.env.BASE_URL] : [])],
         imgSrc: ["'self'", "data:", "https:"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
