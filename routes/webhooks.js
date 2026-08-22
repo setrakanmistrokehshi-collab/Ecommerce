@@ -3,8 +3,6 @@
 const express = require('express');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { Redis } = require('ioredis');
-
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
@@ -13,11 +11,17 @@ const { processSuccessfulPayment } = require('./payments'); // still fine — on
 const { sendPaymentRejectedEmail } = require('../utils/email');
 const logger = require('../utils/logger');
 
+// ⭐ Shared client — this is what broke the payments.js <-> webhooks.js
+// circular require. Both route files now depend on this instead of on
+// each other.
 const { verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
 // ── Redis client ──────────────────────────────────────────────────
+// Reuse the single shared connection from config/redis instead of opening
+// a second one — this file no longer manages its own connect/error/ready
+// lifecycle, that's already handled wherever getRedisClient() sets it up.
 const { getRedisClient } = require('../config/redis');
-const redis = getRedisClient(); 
+const redis = getRedisClient();
 
 const router = express.Router();
 
@@ -133,6 +137,10 @@ router.post('/monnify', async (req, res) => {
   const eventData = payload.eventData || payload.data || {};
   const paymentReference = eventData.paymentReference;
   const transactionReference = eventData.transactionReference;
+
+  // Refund events key off transactionReference, not paymentReference — a
+  // refund payload may not carry paymentReference at all, so don't reject
+  // it here the way we do for collection events below.
   const isRefundEvent = eventType === 'SUCCESSFUL_REFUND' || eventType === 'FAILED_REFUND';
 
   if (!paymentReference && !isRefundEvent) {
@@ -159,11 +167,16 @@ router.post('/monnify', async (req, res) => {
     try {
       logger.info(`Monnify webhook processing: ${eventType} | ref: ${paymentReference || transactionReference}`);
 
+      // ── REFUND EVENTS — handled directly, bypassing verifyTransaction. ──
+      // This was the missing branch: refund eventTypes were previously
+      // falling through to verifyTransaction()/paymentStatus, which almost
+      // never resolves to REVERSED for a refund, so handleReversal() never
+      // ran and stock was never rolled back.
       if (isRefundEvent) {
         if (eventType === 'FAILED_REFUND') {
           const targetOrder = await Order.findOne({ transactionId: transactionReference });
           if (targetOrder) {
-            targetOrder.addStatus('refund_failed', `Refund failed: ${eventData.refundReason || 'unspecified'}`);
+            targetOrder.addPaymentNote(`Refund failed: ${eventData.refundReason || 'unspecified'}`);
             await targetOrder.save();
           }
         } else {
@@ -188,7 +201,7 @@ router.post('/monnify', async (req, res) => {
 
       if (eventType === 'REJECTED_PAYMENT') {
         order.paymentStatus = 'rejected';
-        order.addStatus('rejected', 'Monnify rejected an over/under payment and returned funds to sender');
+        order.addPaymentNote('Monnify rejected an over/under payment and returned funds to sender');
         await order.save();
         logger.warn(`Payment rejected by Monnify gateway for ${order.orderNumber}`);
 
@@ -212,7 +225,7 @@ router.post('/monnify', async (req, res) => {
       if (eventType === 'FAILED_TRANSACTION' || eventType === 'FAILED_COLLECTION') {
         if (order.paymentStatus === 'pending') {
           order.paymentStatus = 'failed';
-          order.addStatus('failed', 'Payment failed (Monnify)');
+          order.addPaymentNote('Payment failed (Monnify)');
           await order.save();
         }
         return;
@@ -227,7 +240,7 @@ router.post('/monnify', async (req, res) => {
 
       if (evaluation.verdict === 'invalid') {
         order.paymentStatus = 'discrepancy';
-        order.addStatus('discrepancy', evaluation.reason);
+        order.addPaymentNote(evaluation.reason);
         await order.save();
         logger.error(`Invalid amount for ${order.orderNumber}`, evaluation);
         return;
@@ -240,8 +253,7 @@ router.post('/monnify', async (req, res) => {
         case 'OVERPAID': {
           if (evaluation.verdict === 'underpaid') {
             order.paymentStatus = 'discrepancy';
-            order.addStatus(
-              'discrepancy',
+            order.addPaymentNote(
               `Status ${verified.paymentStatus} but verified amount (₦${verified.amountPaid}) is below expected`
             );
             await order.save();
@@ -255,8 +267,7 @@ router.post('/monnify', async (req, res) => {
           if (evaluation.verdict === 'overpaid') {
             order.overpaymentFlag = true;
             order.overpaidAmount = evaluation.excessKobo;
-            order.addStatus(
-              'overpaid_flagged',
+            order.addPaymentNote(
               `Overpaid by ₦${(evaluation.excessKobo / 100).toFixed(2)} — flagged for refund/credit review`
             );
             logger.warn(`Order ${order.orderNumber} overpaid by ${evaluation.excessKobo} kobo`);
@@ -274,8 +285,7 @@ router.post('/monnify', async (req, res) => {
 
         case 'PARTIALLY_PAID': {
           order.paymentStatus = 'flagged_underpaid';
-          order.addStatus(
-            'flagged_underpaid',
+          order.addPaymentNote(
             `Underpaid by ₦${(evaluation.shortfallKobo / 100).toFixed(2)} — do not fulfil`
           );
           await order.save();
@@ -290,7 +300,7 @@ router.post('/monnify', async (req, res) => {
         case 'FAILED':
           if (order.paymentStatus === 'pending') {
             order.paymentStatus = 'failed';
-            order.addStatus('failed', 'Payment failed (verified)');
+            order.addPaymentNote('Payment failed (verified)');
             await order.save();
           }
           break;
@@ -298,7 +308,7 @@ router.post('/monnify', async (req, res) => {
         case 'EXPIRED':
           if (order.paymentStatus === 'pending') {
             order.paymentStatus = 'expired';
-            order.addStatus('expired', 'Checkout session expired (verified)');
+            order.addPaymentNote('Checkout session expired (verified)');
             await order.save();
           }
           break;
@@ -414,8 +424,7 @@ async function syncStuckPayments() {
         if (evaluation.verdict === 'overpaid') {
           order.overpaymentFlag = true;
           order.overpaidAmount = evaluation.excessKobo;
-          order.addStatus(
-            'overpaid_flagged',
+          order.addPaymentNote(
             `Overpaid by ₦${(evaluation.excessKobo / 100).toFixed(2)} (recovered via reconciliation) — flagged for refund/credit review`
           );
         }
@@ -429,16 +438,16 @@ async function syncStuckPayments() {
         logger.info(`🎉 Recovered stuck payment: ${order.orderNumber}`);
       } else if (verified.paymentStatus === 'PARTIALLY_PAID' || evaluation.verdict === 'underpaid') {
         order.paymentStatus = 'flagged_underpaid';
-        order.addStatus('flagged_underpaid', 'Recovered via reconciliation sync — underpaid');
+        order.addPaymentNote('Recovered via reconciliation sync — underpaid');
         await order.save();
         logger.warn(`⚠️ Reconciliation found underpayment for ${order.orderNumber}`);
       } else if (verified.paymentStatus === 'FAILED') {
         order.paymentStatus = 'failed';
-        order.addStatus('failed', 'Payment failed (reconciliation)');
+        order.addPaymentNote('Payment failed (reconciliation)');
         await order.save();
       } else if (verified.paymentStatus === 'EXPIRED') {
         order.paymentStatus = 'expired';
-        order.addStatus('expired', 'Payment expired (reconciliation)');
+        order.addPaymentNote('Payment expired (reconciliation)');
         await order.save();
       }
     } catch (error) {
@@ -450,15 +459,8 @@ async function syncStuckPayments() {
 }
 
 const cron = require('node-cron');
-cron.schedule('*/15 * * * *', async () => {
-  try {
-    await syncStuckPayments();
-  } catch (err) {
-    logger.error('Reconciliation cron crashed', {
-      error: err.message,
-      code: err.code,  
-    });
-  }
+cron.schedule('*/5 * * * *', () => {
+  syncStuckPayments().catch((err) => logger.error('Reconciliation cron crashed', { error: err.message }));
 });
 
 // ── BREVO EMAIL WEBHOOK — now with User/EmailLog actually imported ─

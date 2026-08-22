@@ -92,8 +92,6 @@ router.post('/:id/cancel', async (req, res, next) => {
     }
 
     // Guard: don't let a customer cancel an order that's already mid-review
-    // for a payment discrepancy — that needs admin eyes first, not a
-    // customer-triggered cancel that could race the reconciliation job.
     if (['flagged_underpaid', 'discrepancy', 'rejected'].includes(order.paymentStatus)) {
       return next(new AppError('This order is under payment review — contact support to cancel', 400));
     }

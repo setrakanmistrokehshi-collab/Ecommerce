@@ -27,8 +27,13 @@ function errorHandler(err, req, res, next) {
   // Mongoose duplicate key
   if (err.code === 11000) {
     statusCode = 409;
-    const field = Object.keys(err.keyValue)[0];
-    message = `${field.charAt(0).toUpperCase() + field.slice(1)} already in use`;
+    if (err.message?.includes('unique_pending_payment_per_user')) {
+      message = 'You already have a payment in progress. Please complete or cancel it before starting a new order.';
+    } else {
+      const field = Object.keys(err.keyValue || {})[0] || 'Field';
+      message = `${field.charAt(0).toUpperCase() + field.slice(1)} already in use`;
+    }
+
     isOperational = true;
   }
 
