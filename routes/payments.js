@@ -257,45 +257,72 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
     const { items, customer, shippingAddress, promoCode, guestToken } = req.body;
     logger.info('checkout: step 1 — starting product validation');
 
-    // ── 1. Validate products ──────────────────────────────────────
-    const validatedItems = [];
-    for (const item of items) {
-      const product = await Product.findById(item.productId)
-        .select('name price stock reserved emoji isActive');
-      if (!product || !product.isActive) {
-        return next(new AppError(`Product "${item.productId}" not available`, 400));
-      }
-      const available = product.stock - (product.reserved || 0);
-      if (available < item.quantity) {
-        return next(new AppError(`Only ${available} units of "${product.name}" available`, 400));
-      }
-      validatedItems.push({
-        product: product._id,
-        name: product.name,
-        emoji: product.emoji,
-        price: product.price,
-        quantity: item.quantity,
-      });
-    }
-    logger.info('checkout: step 2 — products validated, reserving stock');
+// ── 1. Validate products ──────────────────────────────────────
+const validatedItems = [];
+for (const item of items) {
+  if (!mongoose.Types.ObjectId.isValid(item.productId)) {
+    await releaseReservations(reservations);
+    return next(new AppError(`Invalid product id: ${item.productId}`, 400));
+  }
 
-    // ── 2. Reserve stock atomically ──────────────────────────────
-    for (const item of validatedItems) {
-      const result = await Product.findOneAndUpdate(
-        {
-          _id: item.product,
-          $expr: { $gte: [{ $subtract: ['$stock', '$reserved'] }, item.quantity] },
-        },
-        { $inc: { reserved: item.quantity } },
-        { returnDocument: 'after' }
-      );
-      if (!result) {
-        await releaseReservations(reservations);
-        return next(new AppError(`"${item.name}" just went out of stock.`, 409));
-      }
-      reservations.push({ productId: item.product, quantity: item.quantity });
-    }
+  const product = await Product.findById(item.productId)
+    .select('name price stock reserved isActive')
+    .lean();
 
+  if (!product || product.isActive === false) {
+    await releaseReservations(reservations);
+    return next(new AppError(`Product not found or unavailable`, 404));
+  }
+
+  const available = (product.stock ?? 0) - (product.reserved ?? 0);
+  if (available < item.quantity) {
+    return next(
+      new AppError(`"${product.name}" just went out of stock.`, 409)
+    );
+  }
+
+  validatedItems.push({
+    product: product._id,
+    name: product.name,
+    price: product.price,          // store in kobo if that’s your convention
+    quantity: item.quantity,
+  });
+}
+
+logger.info('checkout: step 2 — products validated, reserving stock');
+
+// ── 2. Reserve stock atomically ──────────────────────────────
+for (const item of validatedItems) {
+  const result = await Product.findOneAndUpdate(
+    {
+      _id: item.product,
+      $expr: {
+        $gte: [
+          { $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] },
+          item.quantity,
+        ],
+      },
+    },
+    { $inc: { reserved: item.quantity } },
+    { returnDocument: 'after' }
+  );
+
+  if (!result) {
+    await releaseReservations(reservations);
+    const current = await Product.findById(item.product).select('name stock reserved');
+    logger.warn('OOS details', {
+      productId: item.product,
+      name: item.name,
+      requested: item.quantity,
+      stock: current?.stock,
+      reserved: current?.reserved,
+      available: (current?.stock ?? 0) - (current?.reserved ?? 0),
+    });
+    return next(new AppError(`"${item.name}" just went out of stock.`, 409));
+  }
+
+  reservations.push({ productId: item.product, quantity: item.quantity });
+}
     // ── 3. Validate promo code ────────────────────────────────────
     let appliedPromo = null;
     if (promoCode) {
