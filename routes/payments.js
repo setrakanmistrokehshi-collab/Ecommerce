@@ -517,7 +517,7 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
 
 // ── ABANDONED ORDER CLEANUP ──────────────────────────────────────
 async function releaseAbandonedReservations() {
-  const EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
+  const EXPIRY_MS = 5 * 60 * 1000; // 15 minutes
   const cutoff = new Date(Date.now() - EXPIRY_MS);
 
   const stale = await Order.find({
