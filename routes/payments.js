@@ -351,57 +351,71 @@ for (const item of validatedItems) {
     }
 
     // ── 5. Resolve user ───────────────────────────────────────────
-    let userId;
-    let isGuest = false;
-    if (req.user) {
-      userId = req.user._id;
-    } else {
-      logger.info('checkout: step 5 — resolving guest token via Redis');
-      if (!guestToken) {
-        await releaseReservations(reservations);
-        return next(new AppError('Guest token required for guest checkout', 400));
-      }
-      const tokenData = await redis.get(`guest:token:${guestToken}`);
-      logger.info('checkout: step 5b — guest token lookup complete');
-      if (!tokenData) {
-        await releaseReservations(reservations);
-        return next(new AppError('Invalid or expired guest session', 401));
-      }
-      const guestEmail = customer.email.toLowerCase();
-      let guestUser = await User.findOne({ guestToken: guestToken });
-      if (!guestUser) {
-        const tempPassword = crypto.randomBytes(32).toString('hex');
-        guestUser = await User.create({
-          name: customer.name || 'Guest',
-          email: guestEmail,
-          password: tempPassword,
-          isGuest: true,
-          guestToken: guestToken,
-          isEmailVerified: false,
-          isActive: true,
-        });
-        logger.info(`Guest user created with token: ${guestToken.slice(0, 8)}`);
-      } else {
-        if (guestUser.email !== guestEmail) {
-          guestUser.email = guestEmail;
-          await guestUser.save();
-        }
-      }
-      userId = guestUser._id;
-      isGuest = true;
-    }
+   // ── 5. Resolve user ───────────────────────────────────────────
+let userId;
+let isGuest = false;
 
-    // ── 5b. Auto-resolve any existing pending order for this user ──
-    // Rather than let the unique_pending_payment_per_user index reject
-    // this checkout outright (confusing 409 for a customer who just
-    // wants to try again), check for a stuck pending order first.
-    // - If it's genuinely fresh (within STALE_AFTER_MS), it's very
-    //   likely a real double-submission (double-click, network retry) —
-    //   let the unique index do its job and reject, since two live
-    //   payment attempts for the same cart is exactly what it prevents.
-    // - If it's older than that, treat it as abandoned: release its
-    //   stock reservation and expire it right now, so this new checkout
-    //   can proceed immediately instead of waiting on the cron.
+if (req.user) {
+  userId = req.user._id;
+} else {
+  logger.info('checkout: step 5 — resolving guest token via Redis');
+
+  if (!guestToken) {
+    await releaseReservations(reservations);
+    return next(new AppError('Guest token required for guest checkout', 400));
+  }
+
+  let tokenData;
+  try {
+    tokenData = await redis.get(`guest:token:${guestToken}`);
+  } catch (redisErr) {
+    logger.error('Redis guest token lookup failed', redisErr);
+    await releaseReservations(reservations);
+    return next(new AppError('Session service unavailable. Please try again.', 503));
+  }
+
+  if (!tokenData) {
+    await releaseReservations(reservations);
+    return next(new AppError('Invalid or expired guest session', 401));
+  }
+
+  const guestEmail = customer.email.toLowerCase();
+
+  let guestUser = await User.findOne({ guestToken });
+  if (!guestUser) {
+    try {
+      const tempPassword = crypto.randomBytes(32).toString('hex');
+      guestUser = await User.create({
+        name: customer.name || 'Guest',
+        email: guestEmail,
+        password: tempPassword,
+        isGuest: true,
+        guestToken,
+        isEmailVerified: false,
+        isActive: true,
+      });
+      logger.info(`Guest user created: ${guestToken.slice(0, 8)}`);
+    } catch (createErr) {
+      // common: E11000 duplicate email
+      logger.error('Guest User.create failed', {
+        message: createErr.message,
+        code: createErr.code,
+      });
+      await releaseReservations(reservations);
+
+      if (createErr.code === 11000) {
+        return next(new AppError('An account with this email already exists. Please log in.', 409));
+      }
+      return next(new AppError('Could not create guest account. Please try again.', 500));
+    }
+  } else if (guestUser.email !== guestEmail) {
+    guestUser.email = guestEmail;
+    await guestUser.save();
+  }
+
+  userId = guestUser._id;
+  isGuest = true;
+}
     const STALE_AFTER_MS = 5 * 60 * 1000; // keep in sync with your comfort window
     const existingPending = await Order.findOne({ user: userId, paymentStatus: 'pending' });
     if (existingPending) {
