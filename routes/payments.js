@@ -20,7 +20,7 @@ const logger = require('../utils/logger');
 // initializeTransaction/verifyTransaction/evaluatePaymentAmount undefined
 // here. Both route files now depend on this shared, dependency-free module
 // instead of on each other — no more cycle.
-const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
+const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
 const { getRedisClient } = require('../config/redis');
 
