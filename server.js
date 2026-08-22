@@ -84,32 +84,51 @@ app.use(
   })
 ); 
 // CORS Configuration
+// CORS Configuration
 const rawOrigins = [process.env.ALLOWED_ORIGINS, process.env.FRONTEND_URL]
   .filter(Boolean)
   .join(",");
 
 if (!rawOrigins && process.env.NODE_ENV === "production") {
-  throw new Error("ALLOWED_ORIGINS must be set in production");
+  throw new Error("ALLOWED_ORIGINS (or FRONTEND_URL) must be set in production");
 }
 
 const allowedOrigins = [
-  ...(rawOrigins ? rawOrigins.split(",").map((o) => o.trim()).filter(Boolean) : []),
+  ...(rawOrigins
+    ? rawOrigins.split(",").map((o) => o.trim()).filter(Boolean)
+    : []),
   "http://localhost:5173",
+  "http://localhost:3000",
   "https://localhost",
   "capacitor://localhost",
   "http://localhost",
 ];
 
+// Optional: allow any *.onrender.com while you debug (remove later)
+const allowOnRender = process.env.ALLOW_ONRENDER_ORIGINS === "true";
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin))
+      // non-browser tools (curl, Postman, server-to-server)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
         return callback(null, true);
-      callback(new Error(`CORS: origin ${origin} not allowed`));
+      }
+
+      if (allowOnRender && origin.endsWith(".onrender.com")) {
+        return callback(null, true);
+      }
+
+      // IMPORTANT: do NOT throw. Throwing turns the preflight into a 500.
+      // callback(null, false) lets the cors package answer correctly.
+      console.warn(`CORS blocked origin: ${origin}`);
+      return callback(null, false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key"],
   }),
 );
 
