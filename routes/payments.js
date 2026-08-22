@@ -14,13 +14,7 @@ const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
 
-// ⭐ FIX: was `require('../routes/webhooks')`, which created a circular
-// require with webhooks.js (which itself requires this file for
-// processSuccessfulPayment). Depending on load order that left
-// initializeTransaction/verifyTransaction/evaluatePaymentAmount undefined
-// here. Both route files now depend on this shared, dependency-free module
-// instead of on each other — no more cycle.
-const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
+const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
 const { getRedisClient } = require('../config/redis');
 
