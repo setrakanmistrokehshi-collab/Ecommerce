@@ -68,9 +68,9 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "https://api.monnify.com"],
-        frameSrc: ["'self'", "https://api.monnify.com"],
-        connectSrc: [ "'self'",process.env.NODE_ENV === "production" ? "https://api.monnify.com" : "https://sandbox.monnify.com",],
+       scriptSrc: ["'self'"],
+        frameSrc: ["'self'"],
+        connectSrc: ["'self'",(process.env.BACKEND_URL ? [process.env.BACKEND_URL] : [])],
         imgSrc: ["'self'", "data:", "https:"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
@@ -84,7 +84,9 @@ app.use(
   })
 ); 
 // CORS Configuration
-const rawOrigins = process.env.ALLOWED_ORIGINS && process.env.FRONTEND_URL;
+const rawOrigins = [process.env.ALLOWED_ORIGINS, process.env.FRONTEND_URL]
+  .filter(Boolean)
+  .join(",");
 
 if (!rawOrigins && process.env.NODE_ENV === "production") {
   throw new Error("ALLOWED_ORIGINS must be set in production");
