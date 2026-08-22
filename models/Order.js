@@ -172,7 +172,7 @@ orderSchema.pre('save', async function (next) {
 
     this.statusHistory.push({ status: 'pending', note: 'Order created' });
   }
-  next();
+  
 });
 
 // ── METHOD: add status history entry (lifecycle `status` field) ──
