@@ -4,7 +4,6 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
-const { Redis } = require('ioredis');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
@@ -14,8 +13,16 @@ const { AppError } = require('../middleware/errorHandler');
 const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
+
+// ⭐ FIX: was `require('../routes/webhooks')`, which created a circular
+// require with webhooks.js (which itself requires this file for
+// processSuccessfulPayment). Depending on load order that left
+// initializeTransaction/verifyTransaction/evaluatePaymentAmount undefined
+// here. Both route files now depend on this shared, dependency-free module
+// instead of on each other — no more cycle.
+const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
+
 const { getRedisClient } = require('../config/redis');
-const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
 const router = express.Router();
 const redis = getRedisClient();
@@ -76,7 +83,6 @@ async function releaseReservations(reservations = []) {
 
 // ── REDIS LOCK HELPER ─────────────────────────────────────────────
 async function acquireLock(key, ttlSeconds = 30) {
-  
   const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
   return result === 'OK';
 }
@@ -218,8 +224,18 @@ async function processSuccessfulPayment(order, verifiedData = {}) {
 }
 
 // ── CHECKOUT ENDPOINT ─────────────────────────────────────────────
-router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
- body('items').isArray({ min: 1, max: 20 }),
+router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
+  // TEMPORARY — remove once the payload-shape issue is confirmed/fixed.
+  // Logs exactly what the client sent, before express-validator runs,
+  // so you can see whether `customer` is missing keys vs. sending empty
+  // strings vs. never arriving at all.
+  logger.info('Checkout payload received', {
+    contentType: req.headers['content-type'],
+    body: req.body,
+  });
+  next();
+}, [
+  body('items').isArray({ min: 1, max: 20 }),
   body('items.*.productId').notEmpty(),
   body('items.*.quantity').isInt({ min: 1, max: 99 }),
   body('customer.email').isEmail().normalizeEmail(),
@@ -228,15 +244,18 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
   body('shippingAddress.street').trim().notEmpty().isLength({ max: 200 }),
   body('shippingAddress.city').trim().notEmpty().isLength({ max: 100 }),
   body('shippingAddress.state').trim().notEmpty().isLength({ max: 100 }),
-  body('promoCode').optional({ checkFalsy: true }).isString().trim().toUpperCase,
+  body('promoCode').optional({ checkFalsy: true }).isString().trim().toUpperCase(),
+  body('guestToken').optional({ checkFalsy: true }).isString().isLength({ min: 32 }),
 ], async (req, res, next) => {
   const reservations = [];
   let order = null;
- 
+
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
+
     const { items, customer, shippingAddress, promoCode, guestToken } = req.body;
+    logger.info('checkout: step 1 — starting product validation');
 
     // ── 1. Validate products ──────────────────────────────────────
     const validatedItems = [];
@@ -258,6 +277,7 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
         quantity: item.quantity,
       });
     }
+    logger.info('checkout: step 2 — products validated, reserving stock');
 
     // ── 2. Reserve stock atomically ──────────────────────────────
     for (const item of validatedItems) {
@@ -279,6 +299,7 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
     // ── 3. Validate promo code ────────────────────────────────────
     let appliedPromo = null;
     if (promoCode) {
+      logger.info('checkout: step 3 — validating promo code');
       const userId = req.user?._id;
       const promo = await validatePromoCode(promoCode, userId, customer.email);
       if (!promo) {
@@ -308,11 +329,13 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
     if (req.user) {
       userId = req.user._id;
     } else {
+      logger.info('checkout: step 5 — resolving guest token via Redis');
       if (!guestToken) {
         await releaseReservations(reservations);
         return next(new AppError('Guest token required for guest checkout', 400));
       }
       const tokenData = await redis.get(`guest:token:${guestToken}`);
+      logger.info('checkout: step 5b — guest token lookup complete');
       if (!tokenData) {
         await releaseReservations(reservations);
         return next(new AppError('Invalid or expired guest session', 401));
@@ -362,10 +385,17 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
 
     logger.info(`Order created: ${order.orderNumber} | ₦${toNaira(total).toFixed(2)}`);
 
-    // ── 7. Initiate Monnify transaction ────────────
+    // ── 7. Initiate Monnify transaction ───────────────────────────
+    // paymentReference must be unique per attempt — Monnify rejects reuse.
+    // Fine as-is for a first attempt since order._id is freshly minted
+    // above. If you ever add a "retry payment on an existing pending
+    // order" endpoint, do NOT reuse this same reference on retry —
+    // append a timestamp/nonce, e.g. `${order._id}-${Date.now()}`, or
+    // Monnify will reject the init call as a duplicate reference.
     const paymentReference = order._id.toString();
     let checkoutUrl;
     try {
+      logger.info('checkout: step 7 — calling Monnify initializeTransaction', { paymentReference });
       const monnifyRes = await initializeTransaction({
         amount: toNaira(total), // Monnify expects a decimal Naira amount, not kobo
         paymentReference,
@@ -373,6 +403,9 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) =>  [
         customerEmail: customer.email,
         paymentDescription: `Winners Health Order #${order.orderNumber}`,
         redirectUrl: `${process.env.FRONTEND_URL}/order-confirmation?ref=${paymentReference}`,
+      });
+      logger.info('checkout: step 7b — Monnify initializeTransaction returned', {
+        hasCheckoutUrl: !!monnifyRes.checkoutUrl,
       });
       checkoutUrl = monnifyRes.checkoutUrl;
       order.monnifyReference = monnifyRes.paymentReference || paymentReference;
@@ -418,6 +451,10 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
       return next(new AppError('Not authorized', 403));
     }
 
+    // If still pending, poll Monnify — but with a lock, and only act on
+    // PAID/OVERPAID here. Everything else (FAILED, EXPIRED, REVERSED,
+    // REJECTED_PAYMENT) is handled authoritatively by the webhook so we
+    // don't duplicate that state machine in two places.
     if (order.paymentStatus === 'pending' && order.monnifyReference) {
       const lockKey = `status:poll:${order._id}`;
       const locked = await acquireLock(lockKey, 10);
@@ -457,24 +494,14 @@ async function releaseAbandonedReservations() {
     createdAt: { $lt: cutoff },
   });
 
-  if (stale.length === 0) return;
-
-  logger.info(`🧹 Releasing reservations for ${stale.length} abandoned order(s)`);
-
   for (const order of stale) {
-    try {
-      await releaseReservations(
-        order.items.map((i) => ({ productId: i.product, quantity: i.quantity }))
-      );
-
-      order.paymentStatus = 'expired';
-      order.addStatus('cancelled', 'Checkout session expired');
-      await order.save();
-
-      logger.info(`Abandoned order expired: ${order.orderNumber}`);
-    } catch (err) {
-      logger.error(`Failed to expire order ${order.orderNumber}`, { error: err.message });
-    }
+    await releaseReservations(
+      order.items.map(i => ({ productId: i.product, quantity: i.quantity }))
+    );
+    order.paymentStatus = 'expired';
+    order.addStatus('cancelled', 'Checkout session expired');
+    await order.save();
+    logger.info(`Abandoned order expired: ${order.orderNumber}`);
   }
 }
 

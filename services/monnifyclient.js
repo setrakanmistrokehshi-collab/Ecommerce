@@ -23,11 +23,13 @@ async function getMonnifyAccessToken() {
 
   try {
     const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString('base64');
+    logger.info('monnifyclient: requesting access token', { baseUrl: MONNIFY_BASE_URL });
     const response = await axios.post(
       `${MONNIFY_BASE_URL}/api/v1/auth/login`,
       {},
       { headers: { Authorization: `Basic ${credentials}` }, timeout: 15000 }
     );
+    logger.info('monnifyclient: access token request completed');
 
     const { accessToken, expiresIn } = response.data.responseBody;
     cachedToken = accessToken;
