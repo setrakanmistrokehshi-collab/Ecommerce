@@ -463,16 +463,8 @@ cron.schedule('*/5 * * * *', () => {
   syncStuckPayments().catch((err) => logger.error('Reconciliation cron crashed', { error: err.message }));
 });
 
-// ⭐ This was written in payments.js but never actually scheduled anywhere —
-// a stale 'pending' order from any interrupted checkout (network drop,
-// closed tab, or the kind of server-side hang we just debugged) would sit
-// forever and permanently block that user from checking out again, thanks
-// to the unique_pending_payment_per_user index on Order.js. Runs every 10
-// minutes; releaseAbandonedReservations() itself only touches orders
-// pending for 15+ minutes, so this won't race with an order still being
-// actively paid for.
 const { releaseAbandonedReservations } = require('./payments');
-cron.schedule('*/10 * * * *', () => {
+cron.schedule('*/3 * * * *', () => {
   releaseAbandonedReservations().catch((err) =>
     logger.error('Abandoned-order cleanup cron crashed', { error: err.message })
   );

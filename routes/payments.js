@@ -14,7 +14,13 @@ const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
 
-const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
+// ⭐ FIX: was `require('../routes/webhooks')`, which created a circular
+// require with webhooks.js (which itself requires this file for
+// processSuccessfulPayment). Depending on load order that left
+// initializeTransaction/verifyTransaction/evaluatePaymentAmount undefined
+// here. Both route files now depend on this shared, dependency-free module
+// instead of on each other — no more cycle.
+const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyClient');
 
 const { getRedisClient } = require('../config/redis');
 
@@ -356,6 +362,37 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
       }
       userId = guestUser._id;
       isGuest = true;
+    }
+
+    // ── 5b. Auto-resolve any existing pending order for this user ──
+    // Rather than let the unique_pending_payment_per_user index reject
+    // this checkout outright (confusing 409 for a customer who just
+    // wants to try again), check for a stuck pending order first.
+    // - If it's genuinely fresh (within STALE_AFTER_MS), it's very
+    //   likely a real double-submission (double-click, network retry) —
+    //   let the unique index do its job and reject, since two live
+    //   payment attempts for the same cart is exactly what it prevents.
+    // - If it's older than that, treat it as abandoned: release its
+    //   stock reservation and expire it right now, so this new checkout
+    //   can proceed immediately instead of waiting on the cron.
+    const STALE_AFTER_MS = 5 * 60 * 1000; // keep in sync with your comfort window
+    const existingPending = await Order.findOne({ user: userId, paymentStatus: 'pending' });
+    if (existingPending) {
+      const ageMs = Date.now() - existingPending.createdAt.getTime();
+      if (ageMs < STALE_AFTER_MS) {
+        await releaseReservations(reservations);
+        return next(new AppError(
+          'You already have a payment in progress. Please complete it, or wait a few minutes and try again.',
+          409
+        ));
+      }
+      await releaseReservations(
+        existingPending.items.map(i => ({ productId: i.product, quantity: i.quantity }))
+      );
+      existingPending.paymentStatus = 'expired';
+      existingPending.addStatus('cancelled', 'Auto-expired: superseded by a new checkout attempt');
+      await existingPending.save();
+      logger.info(`Auto-expired stale pending order ${existingPending.orderNumber} to allow new checkout`);
     }
 
     // ── 6. Create pending order ──────────────────────────────────
