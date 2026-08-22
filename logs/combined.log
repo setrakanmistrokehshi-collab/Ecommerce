@@ -73,3 +73,9 @@
 {"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-22 13:06:05"}
 {"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-22 13:06:17"}
 {"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-22 13:06:17"}
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-08-22 13:06:27"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-08-22 13:06:27"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-08-22 13:06:27"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-22 13:06:27"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-22 13:06:29"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-22 13:06:29"}
