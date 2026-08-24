@@ -458,12 +458,7 @@ if (req.user) {
     logger.info(`Order created: ${order.orderNumber} | ₦${toNaira(total).toFixed(2)}`);
 
     // ── 7. Initiate Monnify transaction ───────────────────────────
-    // paymentReference must be unique per attempt — Monnify rejects reuse.
-    // Fine as-is for a first attempt since order._id is freshly minted
-    // above. If you ever add a "retry payment on an existing pending
-    // order" endpoint, do NOT reuse this same reference on retry —
-    // append a timestamp/nonce, e.g. `${order._id}-${Date.now()}`, or
-    // Monnify will reject the init call as a duplicate reference.
+    
     const paymentReference = order._id.toString();
     let checkoutUrl;
     try {
@@ -483,13 +478,17 @@ if (req.user) {
       order.monnifyReference = monnifyRes.paymentReference || paymentReference;
       await order.save();
     } catch (monnifyErr) {
-      await Promise.allSettled([
-        Order.findByIdAndDelete(order._id),
-        releaseReservations(reservations),
-      ]);
-      logger.error('Monnify checkout failed:', monnifyErr.message);
-      return next(new AppError('Payment gateway unavailable. Please try again.', 503));
-    }
+  await Promise.allSettled([
+    Order.findByIdAndDelete(order._id),
+    releaseReservations(reservations),
+  ]);
+  logger.error('Monnify checkout failed', {
+    message: monnifyErr.message,
+    monnifyResponse: monnifyErr.response?.data,
+    status: monnifyErr.response?.status,
+  });
+  return next(new AppError('Payment gateway unavailable. Please try again.', 503));
+}
 
     res.status(201).json({
       success: true,
