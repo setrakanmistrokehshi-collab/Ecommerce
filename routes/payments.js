@@ -14,18 +14,14 @@ const { sendEmail } = require('../utils/email');
 const { paymentLimiter, statusLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
 
-// ⭐ FIX: was `require('../routes/webhooks')`, which created a circular
-// require with webhooks.js (which itself requires this file for
-// processSuccessfulPayment). Depending on load order that left
-// initializeTransaction/verifyTransaction/evaluatePaymentAmount undefined
-// here. Both route files now depend on this shared, dependency-free module
-// instead of on each other — no more cycle.
-const { initializeTransaction, verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
-
-const { getRedisClient } = require('../config/redis');
+const { getCacheClient, isRedisReady } = require('../config/redis');
 
 const router = express.Router();
-const redis = getRedisClient();
+
+/** Real ioredis instance (or null if Redis not configured / not ready). */
+function redis() {
+  return getCacheClient();
+}
 
 // ── UTILITY: KOBO ↔ NAIRA ────────────────────────────────────────
 function toKobo(naira) {
@@ -82,14 +78,40 @@ async function releaseReservations(reservations = []) {
 }
 
 // ── REDIS LOCK HELPER ─────────────────────────────────────────────
+// ── REDIS LOCK HELPER ─────────────────────────────────────────────
 async function acquireLock(key, ttlSeconds = 30) {
-  const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
-  return result === 'OK';
-}
-async function releaseLock(key) {
-  await redis.del(key);
+  try {
+    if (!isRedisReady()) {
+      logger.warn(`Redis not ready for lock ${key} — proceeding without lock`);
+      return true;
+    }
+    const client = redis();
+    if (!client) {
+      logger.warn(`Redis client missing for lock ${key} — proceeding without lock`);
+      return true;
+    }
+    const result = await client.set(key, 'locked', 'NX', 'EX', ttlSeconds);
+    return result === 'OK';
+  } catch (err) {
+    logger.error(`⚠️ Redis acquireLock failed for ${key} — proceeding without lock`, {
+      error: err.message,
+    });
+    return true;
+  }
 }
 
+async function releaseLock(key) {
+  try {
+    if (!isRedisReady()) return;
+    const client = redis();
+    if (!client) return;
+    await client.del(key);
+  } catch (err) {
+    logger.warn(`Redis releaseLock failed for ${key} (will expire via TTL)`, {
+      error: err.message,
+    });
+  }
+}
 // ── PROCESS SUCCESSFUL PAYMENT (with Transaction + Lock) ────────
 // verifiedData: { transactionReference, paymentMethod, amountPaidNaira, currency }
 
@@ -225,10 +247,6 @@ async function processSuccessfulPayment(order, verifiedData = {}) {
 
 // ── CHECKOUT ENDPOINT ─────────────────────────────────────────────
 router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
-  // TEMPORARY — remove once the payload-shape issue is confirmed/fixed.
-  // Logs exactly what the client sent, before express-validator runs,
-  // so you can see whether `customer` is missing keys vs. sending empty
-  // strings vs. never arriving at all.
   logger.info('Checkout payload received', {
     contentType: req.headers['content-type'],
     body: req.body,
@@ -365,16 +383,16 @@ if (req.user) {
     return next(new AppError('Guest token required for guest checkout', 400));
   }
 
-  let tokenData;
+    let tokenData;
   try {
-    tokenData = await redis.get(`guest:token:${guestToken}`);
+    const client = redis();
+    if (!client || !isRedisReady()) {
+      await releaseReservations(reservations);
+      return next(new AppError('Session service unavailable. Please try again.', 503));
+    }
+    tokenData = await client.get(`guest:token:${guestToken}`);
   } catch (redisErr) {
     logger.error('Redis guest token lookup failed', redisErr);
-    await releaseReservations(reservations);
-    return next(new AppError('Session service unavailable. Please try again.', 503));
-  }
-
-  if (!tokenData) {
     await releaseReservations(reservations);
     return next(new AppError('Invalid or expired guest session', 401));
   }

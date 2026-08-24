@@ -11,19 +11,20 @@ const { processSuccessfulPayment } = require('./payments'); // still fine — on
 const { sendPaymentRejectedEmail } = require('../utils/email');
 const logger = require('../utils/logger');
 
-// ⭐ Shared client — this is what broke the payments.js <-> webhooks.js
-// circular require. Both route files now depend on this instead of on
-// each other.
 const { verifyTransaction, evaluatePaymentAmount } = require('../services/monnifyclient');
 
-// ── Redis client ──────────────────────────────────────────────────
-// Reuse the single shared connection from config/redis instead of opening
-// a second one — this file no longer manages its own connect/error/ready
-// lifecycle, that's already handled wherever getRedisClient() sets it up.
-const { getRedisClient } = require('../config/redis');
-const redis = getRedisClient();
+const { getCacheClient, isRedisReady } = require('../config/redis');
+
 
 const router = express.Router();
+
+function redis() {
+  const client = getCacheClient();
+  if (!client) {
+    throw new Error('Redis client not available (REDIS_URL missing or still connecting)');
+  }
+  return client;
+}
 
 // ── CONFIGURATION ────────────────────────────────────────────────
 const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
@@ -65,32 +66,65 @@ function isFromMonnifyIp(req) {
 // ── REDIS LOCK / IDEMPOTENCY HELPERS (unchanged, fail-safe) ──────
 async function acquireLock(key, ttlSeconds = 30) {
   try {
-    const result = await redis.set(key, 'locked', 'NX', 'EX', ttlSeconds);
+    if (!isRedisReady()) {
+      logger.warn(`Redis not ready for lock ${key} — proceeding without lock`);
+      return true;
+    }
+    const client = redis();
+    if (!client) {
+      logger.warn(`Redis client missing for lock ${key} — proceeding without lock`);
+      return true;
+    }
+    const result = await client.set(key, 'locked', 'NX', 'EX', ttlSeconds);
     return result === 'OK';
   } catch (err) {
-    logger.error(`⚠️ Redis acquireLock failed for ${key} — proceeding without lock`, { error: err.message });
+    logger.error(`⚠️ Redis acquireLock failed for ${key} — proceeding without lock`, {
+      error: err.message,
+    });
     return true;
   }
 }
+
 async function releaseLock(key) {
-  await redis.del(key).catch((err) =>
-    logger.warn(`Redis releaseLock failed for ${key} (will expire via TTL)`, { error: err.message })
-  );
+  try {
+    if (!isRedisReady()) return;
+    const client = redis();
+    if (!client) return;
+    await client.del(key);
+  } catch (err) {
+    logger.warn(`Redis releaseLock failed for ${key} (will expire via TTL)`, {
+      error: err.message,
+    });
+  }
 }
+
 async function isEventProcessed(eventId) {
   if (!eventId) return false;
   try {
-    return (await redis.get(`webhook:processed:${eventId}`)) === '1';
+    if (!isRedisReady()) return false;
+    const client = redis();
+    if (!client) return false;
+    return (await client.get(`webhook:processed:${eventId}`)) === '1';
   } catch (err) {
-    logger.error(`⚠️ Redis isEventProcessed failed for ${eventId} — assuming not processed`, { error: err.message });
+    logger.error(`⚠️ Redis isEventProcessed failed for ${eventId}`, {
+      error: err.message,
+    });
     return false;
   }
 }
+
 async function markEventProcessed(eventId, ttlSeconds = 86400) {
   if (!eventId) return;
-  await redis.set(`webhook:processed:${eventId}`, '1', 'EX', ttlSeconds).catch((err) =>
-    logger.warn(`Redis markEventProcessed failed for ${eventId}`, { error: err.message })
-  );
+  try {
+    if (!isRedisReady()) return;
+    const client = redis();
+    if (!client) return;
+    await client.set(`webhook:processed:${eventId}`, '1', 'EX', ttlSeconds);
+  } catch (err) {
+    logger.warn(`Redis markEventProcessed failed for ${eventId}`, {
+      error: err.message,
+    });
+  }
 }
 
 // ── ORDER LOOKUP (unchanged) ──────────────────────────────────────
@@ -138,9 +172,6 @@ router.post('/monnify', async (req, res) => {
   const paymentReference = eventData.paymentReference;
   const transactionReference = eventData.transactionReference;
 
-  // Refund events key off transactionReference, not paymentReference — a
-  // refund payload may not carry paymentReference at all, so don't reject
-  // it here the way we do for collection events below.
   const isRefundEvent = eventType === 'SUCCESSFUL_REFUND' || eventType === 'FAILED_REFUND';
 
   if (!paymentReference && !isRefundEvent) {
@@ -167,11 +198,6 @@ router.post('/monnify', async (req, res) => {
     try {
       logger.info(`Monnify webhook processing: ${eventType} | ref: ${paymentReference || transactionReference}`);
 
-      // ── REFUND EVENTS — handled directly, bypassing verifyTransaction. ──
-      // This was the missing branch: refund eventTypes were previously
-      // falling through to verifyTransaction()/paymentStatus, which almost
-      // never resolves to REVERSED for a refund, so handleReversal() never
-      // ran and stock was never rolled back.
       if (isRefundEvent) {
         if (eventType === 'FAILED_REFUND') {
           const targetOrder = await Order.findOne({ transactionId: transactionReference });

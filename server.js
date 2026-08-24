@@ -120,10 +120,7 @@ app.use(
       if (allowOnRender && origin.endsWith(".onrender.com")) {
         return callback(null, true);
       }
-
-      // IMPORTANT: do NOT throw. Throwing turns the preflight into a 500.
-      // callback(null, false) lets the cors package answer correctly.
-      console.warn(`CORS blocked origin: ${origin}`);
+      logger.warn(`CORS blocked origin: ${origin}`);
       return callback(null, false);
     },
     credentials: true,
