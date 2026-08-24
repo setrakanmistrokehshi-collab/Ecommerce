@@ -25,10 +25,10 @@ function redis() {
 
 // ── UTILITY: KOBO ↔ NAIRA ────────────────────────────────────────
 function toKobo(naira) {
-  return Math.round(Number(naira) * 100);
+  return Math.round(Number(naira) );
 }
-function toNaira(kobo) {
-  return kobo / 100;
+function toNaira(total) {
+  return total ;
 }
 
 // ── DYNAMIC PROMO CODE SERVICE (DB-backed) ──────────────────────
@@ -355,20 +355,30 @@ for (const item of validatedItems) {
     }
 
     // ── 4. Calculate pricing ──────────────────────────────────────
-    const subtotal = validatedItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
-    let discount = 0;
-    if (appliedPromo) {
-      discount = Math.round(subtotal * appliedPromo.discount);
-    }
-    const shipping = subtotal - discount >= 2500000 ? 0 : 250000; // ₦25,000
-    const total = subtotal - discount + shipping;
+   const subtotal = validatedItems.reduce(
+  (sum, i) => sum + i.price * i.quantity,
+  0
+);
 
-    if (total < 10000) {
-      await releaseReservations(reservations);
-      return next(new AppError('Order total too low', 400));
-    }
+let discount = 0;
+if (appliedPromo) {
+  // appliedPromo.discount MUST be a fraction: 0.1 = 10% off
+  discount = Math.round(subtotal * appliedPromo.discount);
+  discount = Math.min(discount, subtotal); // never more than subtotal
+}
 
-    // ── 5. Resolve user ───────────────────────────────────────────
+const FREE_SHIPPING_THRESHOLD_KOBO = 2_500_000; // ₦25,000
+const SHIPPING_FEE_KOBO = 250_000;              // ₦2,500
+
+const shipping =
+  subtotal - discount >= FREE_SHIPPING_THRESHOLD_KOBO ? 0 : SHIPPING_FEE_KOBO;
+
+const total = subtotal - discount + shipping;
+
+if (total < 100_000) { // ₦1000
+  await releaseReservations(reservations);
+  return next(new AppError('Order total too low', 400));
+}
    // ── 5. Resolve user ───────────────────────────────────────────
 let userId;
 let isGuest = false;
@@ -434,7 +444,7 @@ if (req.user) {
   userId = guestUser._id;
   isGuest = true;
 }
-    const STALE_AFTER_MS = 5 * 60 * 1000; // keep in sync with your comfort window
+    const STALE_AFTER_MS = 15 * 60 * 1000; // keep in sync with your comfort window
     const existingPending = await Order.findOne({ user: userId, paymentStatus: 'pending' });
     if (existingPending) {
       const ageMs = Date.now() - existingPending.createdAt.getTime();
@@ -575,17 +585,37 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
 
 // ── ABANDONED ORDER CLEANUP ──────────────────────────────────────
 async function releaseAbandonedReservations() {
-  const EXPIRY_MS = 5 * 60 * 1000; // 15 minutes
+  const EXPIRY_MS = 15 * 60 * 1000; // 15 min — don’t kill in-flight card/OTP
   const cutoff = new Date(Date.now() - EXPIRY_MS);
 
   const stale = await Order.find({
     paymentStatus: 'pending',
     createdAt: { $lt: cutoff },
+    paidAt: { $exists: false },
+    transactionId: { $exists: false },
   });
 
   for (const order of stale) {
+    // If Monnify already collected, complete — don’t expire
+    if (order.monnifyReference) {
+      try {
+        const verified = await verifyTransaction(order.monnifyReference);
+        if (verified.paymentStatus === 'PAID' || verified.paymentStatus === 'OVERPAID') {
+          await processSuccessfulPayment(order, {
+            transactionReference: verified.transactionReference,
+            paymentMethod: verified.paymentMethod,
+            amountPaidNaira: verified.amountPaid,
+            currency: 'NGN',
+          });
+          continue;
+        }
+      } catch (err) {
+        logger.warn(`Cleanup verify failed for ${order.orderNumber}: ${err.message}`);
+      }
+    }
+
     await releaseReservations(
-      order.items.map(i => ({ productId: i.product, quantity: i.quantity }))
+      order.items.map((i) => ({ productId: i.product, quantity: i.quantity }))
     );
     order.paymentStatus = 'expired';
     order.addStatus('cancelled', 'Checkout session expired');
