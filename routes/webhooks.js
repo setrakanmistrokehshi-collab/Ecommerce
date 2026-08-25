@@ -413,7 +413,7 @@ async function handleReversal(transactionReference, verified) {
 // ── BACKGROUND RECONCILIATION (unchanged, still imports from the
 // shared service rather than defining its own copies) ────────────
 async function syncStuckPayments() {
-  const staleCutoff = new Date(Date.now() - 5 * 60 * 1000);
+  const staleCutoff = new Date(Date.now() - 15 * 60 * 1000);
 
   const pendingOrders = await Order.find({
     paymentStatus: 'pending',

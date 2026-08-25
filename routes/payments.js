@@ -72,7 +72,10 @@ async function validatePromoCode(code, userId, email) {
 async function releaseReservations(reservations = []) {
   const results = await Promise.allSettled(
     reservations.map(({ productId, quantity }) =>
-      Product.findByIdAndUpdate(productId, { $inc: { reserved: -quantity } })
+      Product.findOneAndUpdate(
+        { _id: productId, reserved: { $gte: quantity } },
+        { $inc: { reserved: -quantity } }
+      )
     )
   );
   results.forEach((r, i) => {
@@ -516,6 +519,7 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
       checkoutUrl = monnifyRes.checkoutUrl;
       order.monnifyReference = monnifyRes.paymentReference || paymentReference;
       await order.save();
+      
     } catch (monnifyErr) {
       await Promise.allSettled([
         Order.findByIdAndDelete(order._id),
