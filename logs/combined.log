@@ -243,3 +243,17 @@
 {"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-24 17:29:38"}
 {"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-24 17:29:40"}
 {"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-24 17:29:40"}
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-08-25 14:11:54"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-08-25 14:11:54"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-08-25 14:11:54"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-25 14:11:54"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-25 14:12:06"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-25 14:12:06"}
+{"error":"getaddrinfo ENOTFOUND ac-flitctr-shard-00-01.nynknzl.mongodb.net","level":"error","message":"Abandoned-order cleanup cron crashed","timestamp":"2026-08-25 14:21:45"}
+{"level":"info","message":"SIGINT received — shutting down gracefully","timestamp":"2026-08-25 14:38:22"}
+{"level":"info","message":"📦 In-memory fallback cache initialized","timestamp":"2026-08-25 14:39:08"}
+{"level":"info","message":"📦 Cache settings: TTL=300s, Max size=1000 items","timestamp":"2026-08-25 14:39:08"}
+{"level":"info","message":"📦 Memory fallback cache instance created","timestamp":"2026-08-25 14:39:08"}
+{"level":"info","message":"Redis cache: connected and working","timestamp":"2026-08-25 14:39:08"}
+{"level":"info","message":"✅ MongoDB connected","timestamp":"2026-08-25 14:39:27"}
+{"level":"info","message":"🚀 Server running on port 3000 [production]","timestamp":"2026-08-25 14:39:27"}
