@@ -22,19 +22,13 @@ const { getCacheClient, isRedisReady } = require('../config/redis');
 
 const router = express.Router();
 
-/** Real ioredis instance (or null if Redis not configured / not ready). */
+/** Real ioredis instance */
 function redis() {
   return getCacheClient();
 }
 
 // ── UTILITY: KOBO ↔ NAIRA ────────────────────────────────────────
-// These MUST do real unit conversion. A prior edit accidentally reduced
-// both to near-identity functions (toKobo just rounded its input instead
-// of multiplying by 100; toNaira returned its input completely unchanged).
-// Since toNaira() feeds the `amount` field sent to Monnify's
-// initializeTransaction() call, that regression meant every real checkout
-// was telling Monnify the order cost 100x its actual price — this is the
-// root cause behind the "overpaid by ~100x" cases seen in production.
+
 function toKobo(naira) {
   return Math.round(Number(naira) * 100);
 }
