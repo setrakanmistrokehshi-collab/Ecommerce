@@ -28,11 +28,18 @@ function redis() {
 }
 
 // ── UTILITY: KOBO ↔ NAIRA ────────────────────────────────────────
+// These MUST do real unit conversion. A prior edit accidentally reduced
+// both to near-identity functions (toKobo just rounded its input instead
+// of multiplying by 100; toNaira returned its input completely unchanged).
+// Since toNaira() feeds the `amount` field sent to Monnify's
+// initializeTransaction() call, that regression meant every real checkout
+// was telling Monnify the order cost 100x its actual price — this is the
+// root cause behind the "overpaid by ~100x" cases seen in production.
 function toKobo(naira) {
-  return Math.round(Number(naira) );
+  return Math.round(Number(naira) * 100);
 }
-function toNaira(total) {
-  return total ;
+function toNaira(kobo) {
+  return kobo / 100;
 }
 
 // ── DYNAMIC PROMO CODE SERVICE (DB-backed) ──────────────────────
@@ -81,7 +88,6 @@ async function releaseReservations(reservations = []) {
   });
 }
 
-// ── REDIS LOCK HELPER ─────────────────────────────────────────────
 // ── REDIS LOCK HELPER ─────────────────────────────────────────────
 async function acquireLock(key, ttlSeconds = 30) {
   try {
@@ -279,72 +285,73 @@ router.post('/checkout', optionalAuth, paymentLimiter, (req, res, next) => {
     const { items, customer, shippingAddress, promoCode, guestToken } = req.body;
     logger.info('checkout: step 1 — starting product validation');
 
-// ── 1. Validate products ──────────────────────────────────────
-const validatedItems = [];
-for (const item of items) {
-  if (!mongoose.Types.ObjectId.isValid(item.productId)) {
-    await releaseReservations(reservations);
-    return next(new AppError(`Invalid product id: ${item.productId}`, 400));
-  }
+    // ── 1. Validate products ──────────────────────────────────────
+    const validatedItems = [];
+    for (const item of items) {
+      if (!mongoose.Types.ObjectId.isValid(item.productId)) {
+        await releaseReservations(reservations);
+        return next(new AppError(`Invalid product id: ${item.productId}`, 400));
+      }
 
-  const product = await Product.findById(item.productId)
-    .select('name price stock reserved isActive')
-    .lean();
+      const product = await Product.findById(item.productId)
+        .select('name price stock reserved isActive')
+        .lean();
 
-  if (!product || product.isActive === false) {
-    await releaseReservations(reservations);
-    return next(new AppError(`Product not found or unavailable`, 404));
-  }
+      if (!product || product.isActive === false) {
+        await releaseReservations(reservations);
+        return next(new AppError(`Product not found or unavailable`, 404));
+      }
 
-  const available = (product.stock ?? 0) - (product.reserved ?? 0);
-  if (available < item.quantity) {
-    return next(
-      new AppError(`"${product.name}" just went out of stock.`, 409)
-    );
-  }
+      const available = (product.stock ?? 0) - (product.reserved ?? 0);
+      if (available < item.quantity) {
+        return next(
+          new AppError(`"${product.name}" just went out of stock.`, 409)
+        );
+      }
 
-  validatedItems.push({
-    product: product._id,
-    name: product.name,
-    price: product.price,          // store in kobo if that’s your convention
-    quantity: item.quantity,
-  });
-}
+      validatedItems.push({
+        product: product._id,
+        name: product.name,
+        price: product.price,          // stored in kobo
+        quantity: item.quantity,
+      });
+    }
 
-logger.info('checkout: step 2 — products validated, reserving stock');
+    logger.info('checkout: step 2 — products validated, reserving stock');
 
-// ── 2. Reserve stock atomically ──────────────────────────────
-for (const item of validatedItems) {
-  const result = await Product.findOneAndUpdate(
-    {
-      _id: item.product,
-      $expr: {
-        $gte: [
-          { $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] },
-          item.quantity,
-        ],
-      },
-    },
-    { $inc: { reserved: item.quantity } },
-    { returnDocument: 'after' }
-  );
+    // ── 2. Reserve stock atomically ──────────────────────────────
+    for (const item of validatedItems) {
+      const result = await Product.findOneAndUpdate(
+        {
+          _id: item.product,
+          $expr: {
+            $gte: [
+              { $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] },
+              item.quantity,
+            ],
+          },
+        },
+        { $inc: { reserved: item.quantity } },
+        { returnDocument: 'after' }
+      );
 
-  if (!result) {
-    await releaseReservations(reservations);
-    const current = await Product.findById(item.product).select('name stock reserved');
-    logger.warn('OOS details', {
-      productId: item.product,
-      name: item.name,
-      requested: item.quantity,
-      stock: current?.stock,
-      reserved: current?.reserved,
-      available: (current?.stock ?? 0) - (current?.reserved ?? 0),
-    });
-    return next(new AppError(`"${item.name}" just went out of stock.`, 409));
-  }
+      if (!result) {
+        await releaseReservations(reservations);
+        const current = await Product.findById(item.product).select('name stock reserved');
+        logger.warn('OOS details', {
+          productId: item.product,
+          name: item.name,
+          requested: item.quantity,
+          stock: current?.stock,
+          reserved: current?.reserved,
+          available: (current?.stock ?? 0) - (current?.reserved ?? 0),
+        });
+        return next(new AppError(`"${item.name}" just went out of stock.`, 409));
+      }
 
-  reservations.push({ productId: item.product, quantity: item.quantity });
-}
+      reservations.push({ productId: item.product, quantity: item.quantity });
+    }
+
     // ── 3. Validate promo code ────────────────────────────────────
     let appliedPromo = null;
     if (promoCode) {
@@ -359,96 +366,103 @@ for (const item of validatedItems) {
     }
 
     // ── 4. Calculate pricing ──────────────────────────────────────
-   const subtotal = validatedItems.reduce(
-  (sum, i) => sum + i.price * i.quantity,
-  0
-);
+    const subtotal = validatedItems.reduce(
+      (sum, i) => sum + i.price * i.quantity,
+      0
+    );
 
-let discount = 0;
-if (appliedPromo) {
-  // appliedPromo.discount MUST be a fraction: 0.1 = 10% off
-  discount = Math.round(subtotal * appliedPromo.discount);
-  discount = Math.min(discount, subtotal); // never more than subtotal
-}
-
-const FREE_SHIPPING_THRESHOLD_KOBO = 2_500_000; // ₦25,000
-const SHIPPING_FEE_KOBO = 250_000;              // ₦2,500
-
-const shipping =
-  subtotal - discount >= FREE_SHIPPING_THRESHOLD_KOBO ? 0 : SHIPPING_FEE_KOBO;
-
-const total = subtotal - discount + shipping;
-
-if (total < 100_000) { // ₦1000
-  await releaseReservations(reservations);
-  return next(new AppError('Order total too low', 400));
-}
-   // ── 5. Resolve user ───────────────────────────────────────────
-let userId;
-let isGuest = false;
-
-if (req.user) {
-  userId = req.user._id;
-} else {
-  logger.info('checkout: step 5 — resolving guest token via Redis');
-
-  if (!guestToken) {
-    await releaseReservations(reservations);
-    return next(new AppError('Guest token required for guest checkout', 400));
-  }
-
-    let tokenData;
-  try {
-    const client = redis();
-    if (!client || !isRedisReady()) {
-      await releaseReservations(reservations);
-      return next(new AppError('Session service unavailable. Please try again.', 503));
+    let discount = 0;
+    if (appliedPromo) {
+      // appliedPromo.discount MUST be a fraction: 0.1 = 10% off
+      discount = Math.round(subtotal * appliedPromo.discount);
+      discount = Math.min(discount, subtotal); // never more than subtotal
     }
-    tokenData = await client.get(`guest:token:${guestToken}`);
-  } catch (redisErr) {
-    logger.error('Redis guest token lookup failed', redisErr);
-    await releaseReservations(reservations);
-    return next(new AppError('Invalid or expired guest session', 401));
-  }
 
-  const guestEmail = customer.email.toLowerCase();
+    const FREE_SHIPPING_THRESHOLD_KOBO = 2_500_000; // ₦25,000
+    const SHIPPING_FEE_KOBO = 250_000;              // ₦2,500
 
-  let guestUser = await User.findOne({ guestToken });
-  if (!guestUser) {
-    try {
-      const tempPassword = crypto.randomBytes(32).toString('hex');
-      guestUser = await User.create({
-        name: customer.name || 'Guest',
-        email: guestEmail,
-        password: tempPassword,
-        isGuest: true,
-        guestToken,
-        isEmailVerified: false,
-        isActive: true,
-      });
-      logger.info(`Guest user created: ${guestToken.slice(0, 8)}`);
-    } catch (createErr) {
-      // common: E11000 duplicate email
-      logger.error('Guest User.create failed', {
-        message: createErr.message,
-        code: createErr.code,
-      });
+    const shipping =
+      subtotal - discount >= FREE_SHIPPING_THRESHOLD_KOBO ? 0 : SHIPPING_FEE_KOBO;
+
+    const total = subtotal - discount + shipping;
+
+    if (total < 100_000) { // ₦1000
       await releaseReservations(reservations);
+      return next(new AppError('Order total too low', 400));
+    }
 
-      if (createErr.code === 11000) {
-        return next(new AppError('An account with this email already exists. Please log in.', 409));
+    // ── 5. Resolve user ───────────────────────────────────────────
+    let userId;
+    let isGuest = false;
+
+    if (req.user) {
+      userId = req.user._id;
+    } else {
+      logger.info('checkout: step 5 — resolving guest token via Redis');
+
+      if (!guestToken) {
+        await releaseReservations(reservations);
+        return next(new AppError('Guest token required for guest checkout', 400));
       }
-      return next(new AppError('Could not create guest account. Please try again.', 500));
-    }
-  } else if (guestUser.email !== guestEmail) {
-    guestUser.email = guestEmail;
-    await guestUser.save();
-  }
 
-  userId = guestUser._id;
-  isGuest = true;
-}
-    const STALE_AFTER_MS = 15 * 60 * 1000; // keep in sync with your comfort window
+      let tokenData;
+      try {
+        const client = redis();
+        if (!client || !isRedisReady()) {
+          await releaseReservations(reservations);
+          return next(new AppError('Session service unavailable. Please try again.', 503));
+        }
+        tokenData = await client.get(`guest:token:${guestToken}`);
+      } catch (redisErr) {
+        logger.error('Redis guest token lookup failed', redisErr);
+        await releaseReservations(reservations);
+        return next(new AppError('Session service unavailable. Please try again.', 503));
+      }
+
+      if (!tokenData) {
+        await releaseReservations(reservations);
+        return next(new AppError('Invalid or expired guest session', 401));
+      }
+
+      const guestEmail = customer.email.toLowerCase();
+
+      let guestUser = await User.findOne({ guestToken });
+      if (!guestUser) {
+        try {
+          const tempPassword = crypto.randomBytes(32).toString('hex');
+          guestUser = await User.create({
+            name: customer.name || 'Guest',
+            email: guestEmail,
+            password: tempPassword,
+            isGuest: true,
+            guestToken,
+            isEmailVerified: false,
+            isActive: true,
+          });
+          logger.info(`Guest user created: ${guestToken.slice(0, 8)}`);
+        } catch (createErr) {
+          // common: E11000 duplicate email
+          logger.error('Guest User.create failed', {
+            message: createErr.message,
+            code: createErr.code,
+          });
+          await releaseReservations(reservations);
+
+          if (createErr.code === 11000) {
+            return next(new AppError('An account with this email already exists. Please log in.', 409));
+          }
+          return next(new AppError('Could not create guest account. Please try again.', 500));
+        }
+      } else if (guestUser.email !== guestEmail) {
+        guestUser.email = guestEmail;
+        await guestUser.save();
+      }
+
+      userId = guestUser._id;
+      isGuest = true;
+    }
+
+    const STALE_AFTER_MS = 15 * 60 * 1000; // keep in sync with releaseAbandonedReservations
     const existingPending = await Order.findOne({ user: userId, paymentStatus: 'pending' });
     if (existingPending) {
       const ageMs = Date.now() - existingPending.createdAt.getTime();
@@ -490,7 +504,6 @@ if (req.user) {
     logger.info(`Order created: ${order.orderNumber} | ₦${toNaira(total).toFixed(2)}`);
 
     // ── 7. Initiate Monnify transaction ───────────────────────────
-    
     const paymentReference = order._id.toString();
     let checkoutUrl;
     try {
@@ -510,17 +523,17 @@ if (req.user) {
       order.monnifyReference = monnifyRes.paymentReference || paymentReference;
       await order.save();
     } catch (monnifyErr) {
-  await Promise.allSettled([
-    Order.findByIdAndDelete(order._id),
-    releaseReservations(reservations),
-  ]);
-  logger.error('Monnify checkout failed', {
-    message: monnifyErr.message,
-    monnifyResponse: monnifyErr.response?.data,
-    status: monnifyErr.response?.status,
-  });
-  return next(new AppError('Payment gateway unavailable. Please try again.', 503));
-}
+      await Promise.allSettled([
+        Order.findByIdAndDelete(order._id),
+        releaseReservations(reservations),
+      ]);
+      logger.error('Monnify checkout failed', {
+        message: monnifyErr.message,
+        monnifyResponse: monnifyErr.response?.data,
+        status: monnifyErr.response?.status,
+      });
+      return next(new AppError('Payment gateway unavailable. Please try again.', 503));
+    }
 
     res.status(201).json({
       success: true,
@@ -554,10 +567,6 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
       return next(new AppError('Not authorized', 403));
     }
 
-    // If still pending, poll Monnify — but with a lock, and only act on
-    // PAID/OVERPAID here. Everything else (FAILED, EXPIRED, REVERSED,
-    // REJECTED_PAYMENT) is handled authoritatively by the webhook so we
-    // don't duplicate that state machine in two places.
     if (order.paymentStatus === 'pending' && order.monnifyReference) {
       const lockKey = `status:poll:${order._id}`;
       const locked = await acquireLock(lockKey, 10);
@@ -589,7 +598,7 @@ router.get('/:reference/status', protect, statusLimiter, async (req, res, next) 
 
 // ── ABANDONED ORDER CLEANUP ──────────────────────────────────────
 async function releaseAbandonedReservations() {
-  const EXPIRY_MS = 15 * 60 * 1000; // 15 min — don’t kill in-flight card/OTP
+  const EXPIRY_MS = 15 * 60 * 1000; // 15 min — don't kill in-flight card/OTP
   const cutoff = new Date(Date.now() - EXPIRY_MS);
 
   const stale = await Order.find({
@@ -600,7 +609,7 @@ async function releaseAbandonedReservations() {
   });
 
   for (const order of stale) {
-    // If Monnify already collected, complete — don’t expire
+    // If Monnify already collected, complete — don't expire
     if (order.monnifyReference) {
       try {
         const verified = await verifyTransaction(order.monnifyReference);
